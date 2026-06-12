@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --border: #e2e8f0;
+  --primary: #0369a1;
+  --primary-hover: #0284c7;
+  --muted: #64748b;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-muted: var(--muted);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+.card {
+  @apply rounded-xl border border-border bg-card p-6 shadow-sm;
+}
+
+.input {
+  @apply w-full rounded-lg border border-border bg-white px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50;
+}
+
+.btn-primary {
+  @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 bg-primary text-white hover:bg-primary-hover;
+}
+
+.btn-secondary {
+  @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 border border-border bg-white hover:bg-slate-50;
+}
+
+.label {
+  @apply mb-1 block text-xs font-medium uppercase tracking-wide text-muted;
+}
+
+.badge {
+  @apply inline-flex rounded-full px-2 py-0.5 text-xs font-medium;
+}
+
+.badge-ready {
+  @apply inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-emerald-100 text-emerald-800;
+}
+
+.badge-processing {
+  @apply inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800;
+}
+
+.badge-failed {
+  @apply inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-red-100 text-red-800;
+}
+
+.badge-pending {
+  @apply inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-700;
+}

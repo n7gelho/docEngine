@@ -1,0 +1,29 @@
+services:
+  postgres:
+    build: ./docker/postgres
+    image: docengine-postgres:16
+    container_name: docengine-postgres
+    environment:
+      POSTGRES_USER: docengine
+      POSTGRES_PASSWORD: docengine
+      POSTGRES_DB: docengine
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  # Optional — pull often fails on some networks. Prefer native Ollama on Windows:
+  # https://ollama.com/download  then: ollama pull llama3.1:8b && ollama pull nomic-embed-text
+  ollama:
+    profiles: ["ollama"]
+    image: ollama/ollama:latest
+    container_name: docengine-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  postgres_data:
+  ollama_data:

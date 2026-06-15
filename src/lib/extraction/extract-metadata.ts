@@ -1,16 +1,20 @@
-import {
-  getAiProviderPreference,
-  hasChatProviderAvailable,
-} from "@/lib/ai/config";
+import { hasChatProviderAvailable } from "@/lib/ai/config";
 import type { DealType, DocumentType } from "@/lib/db/schema";
-import { classifyDocumentHeuristic } from "@/lib/extraction/classify-document";
 import { ExtractionTraceCollector } from "@/lib/extraction/extraction-trace";
 import {
   computeLoiCoverage,
   type ExtractionCoverage,
 } from "@/lib/extraction/extraction-coverage";
 import { extractLoiHeuristic } from "@/lib/extraction/loi-heuristic";
-import { callLlmJson, parseJsonContent } from "@/lib/extraction/llm-json";
+import { parseJsonContent } from "@/lib/extraction/llm-json";
+import { callLlmInContext } from "@/lib/extraction/pipeline/llm-call";
+import {
+  adoptHeuristicModel,
+  HEURISTIC_MODEL,
+  trackModel,
+  type ExtractionPipelineContext,
+} from "@/lib/extraction/pipeline/context";
+import { resolveLoiDealType } from "@/lib/extraction/resolve-loi-deal-type";
 import {
   normalizeExtractionPayload,
   normalizeFieldMap,
@@ -62,10 +66,12 @@ function parseLoiJson(raw: unknown, hint: ExtractionHint): LoiExtractionResult {
 
 async function extractLoiWithLlm(
   extractionText: string,
-  hint: ExtractionHint
+  hint: ExtractionHint,
+  ctx: ExtractionPipelineContext
 ): Promise<{ result: LoiExtractionResult; model: string }> {
   const dealType = hint.dealType ?? "LEASE";
-  const { content, model } = await callLlmJson(
+  const { content, model } = await callLlmInContext(
+    ctx,
     buildLoiExtractionPrompt(extractionText, dealType)
   );
   const result = parseLoiJson(parseJsonContent(content), hint);
@@ -73,6 +79,7 @@ async function extractLoiWithLlm(
     result.fields as Record<string, ParsedFieldValue>,
     extractionText
   );
+  trackModel(ctx.model, model);
   return {
     result: { ...result, fields: validated },
     model,
@@ -82,30 +89,37 @@ async function extractLoiWithLlm(
 export async function extractLoiMetadata(
   extractionText: string,
   hint: ExtractionHint = {},
-  trace?: ExtractionTraceCollector
+  ctx: ExtractionPipelineContext,
+  trace?: ExtractionTraceCollector,
+  filename?: string
 ): Promise<ExtractionOutcome> {
   const collector = trace ?? new ExtractionTraceCollector();
-  const preference = getAiProviderPreference();
-  const errors: string[] = [];
+  const dealType = resolveLoiDealType(
+    hint.dealType,
+    extractionText,
+    filename
+  );
   const resolvedHint: ExtractionHint = {
-    dealType: hint.dealType ?? classifyDocumentHeuristic(extractionText).dealType,
+    dealType,
     documentType: "LOI",
   };
+  const coverageWarnings: string[] = [];
+  if (hint.dealType && hint.dealType !== dealType) {
+    coverageWarnings.push(
+      `Deal type corrected from ${hint.dealType} to ${dealType} using document text`
+    );
+  }
 
-  const profile = getLoiProfile(resolvedHint.dealType ?? "LEASE");
+  const profile = getLoiProfile(dealType);
   const fieldsTotal = profile.fields.length;
+  const llmErrors: string[] = [];
 
-  const tryLlm =
-    preference === "ollama" ||
-    preference === "openai" ||
-    preference === "claude" ||
-    preference === "auto";
-
-  if (tryLlm && hasChatProviderAvailable()) {
+  if (hasChatProviderAvailable()) {
     try {
       const { result, model } = await extractLoiWithLlm(
         extractionText,
-        resolvedHint
+        resolvedHint,
+        ctx
       );
       const filled = Object.values(result.fields).filter(
         (f) => f.value !== null && String(f.value).trim() !== ""
@@ -121,31 +135,24 @@ export async function extractLoiMetadata(
       return {
         result,
         model,
-        coverage: computeLoiCoverage(result.fields, result.dealType),
+        coverage: computeLoiCoverage(result.fields, result.dealType, coverageWarnings),
         trace: collector.toTrace(),
       };
     } catch (error) {
-      errors.push(
+      llmErrors.push(
         error instanceof Error ? error.message : "LLM extraction failed"
       );
-      if (
-        preference === "ollama" ||
-        preference === "openai" ||
-        preference === "claude"
-      ) {
-        throw new Error(errors.join("; "));
-      }
     }
+  } else {
+    llmErrors.push("No AI chat provider available");
   }
 
-  if (errors.length > 0) {
-    console.warn(
-      `[extractLoiMetadata] Falling back to heuristic: ${errors.join("; ")}`
-    );
-  }
+  console.warn(
+    `[extractLoiMetadata] Falling back to heuristic: ${llmErrors.join("; ")}`
+  );
 
-  const dealType = resolvedHint.dealType ?? "LEASE";
   const result = extractLoiHeuristic(extractionText, dealType);
+  const model = adoptHeuristicModel(ctx.model);
   const filled = Object.values(result.fields).filter(
     (f) => f.value !== null && String(f.value).trim() !== ""
   ).length;
@@ -153,20 +160,19 @@ export async function extractLoiMetadata(
     kind: "loi",
     label: "LOI extraction (heuristic fallback)",
     text: extractionText,
-    model: "heuristic-v3",
+    model: HEURISTIC_MODEL,
     fieldsFilled: filled,
     fieldsTotal,
-    error: errors.join("; ") || undefined,
+    error: llmErrors.join("; ") || undefined,
   });
   return {
     result,
-    model: "heuristic-v3",
+    model,
     coverage: computeLoiCoverage(
       result.fields as Record<string, ParsedFieldValue>,
       dealType,
-      errors
+      [...coverageWarnings, ...llmErrors]
     ),
     trace: collector.toTrace(),
   };
 }
-

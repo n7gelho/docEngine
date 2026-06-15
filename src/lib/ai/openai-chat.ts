@@ -1,11 +1,17 @@
 import OpenAI from "openai";
-import { isOpenAiConfigured } from "@/lib/ai/config";
+import {
+  getChatRequestTimeoutMs,
+  isOpenAiConfigured,
+} from "@/lib/ai/config";
 
 function getOpenAIClient(): OpenAI {
   if (!isOpenAiConfigured()) {
     throw new Error("OpenAI API key is not configured");
   }
-  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  return new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+    timeout: getChatRequestTimeoutMs(),
+  });
 }
 
 export async function openaiChatJson(

@@ -57,6 +57,8 @@ Key variables:
 | `DATABASE_URL` | PostgreSQL connection (default works with Docker Compose) |
 | `AI_PROVIDER=auto` | Claude (if key) → OpenAI (if key) → Ollama |
 | `AI_CHAT_FALLBACK_OLLAMA=true` | When primary chat provider fails, try Ollama |
+| `AI_CLASSIFICATION_MODE=llm` | Use LLM for classification (default; recommended) |
+| `AI_CHAT_TIMEOUT_MS=60000` | External API timeout before Ollama fallback |
 | `AI_EMBEDDING_PROVIDER=auto` | Ollama → OpenAI → hash fallback for embeddings |
 | `ANTHROPIC_API_KEY` | Required for `AI_PROVIDER=claude` |
 | `CLAUDE_MODEL` | Claude model id (default `claude-sonnet-4-20250514`) |
@@ -92,7 +94,7 @@ Upload (PDF/DOCX)
 2. **Section passes** — Locate 9 contract sections (regex + keyword fallback), run parallel LLM calls per section with flat JSON output
 3. **Coverage** — Stored in `metadata._extraction_coverage` (fields filled, sections located, warnings)
 
-**AI fallback chain** (`AI_PROVIDER=claude` or `openai`): primary provider → Ollama (when `AI_CHAT_FALLBACK_OLLAMA=true`). LOI also has regex heuristic when `AI_PROVIDER=auto` and all chat providers fail.
+**AI fallback chain** (`AI_PROVIDER=claude` or `openai`): primary provider → Ollama (when `AI_CHAT_FALLBACK_OLLAMA=true`). Provider is pinned per document so quota errors are not retried on every section. LOI uses regex heuristic only when all LLM providers fail. Classification uses filename/heuristic in `AI_CLASSIFICATION_MODE=auto` when confident.
 
 ## API
 

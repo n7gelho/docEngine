@@ -1,10 +1,8 @@
+import { callLlmInContext } from "@/lib/extraction/pipeline/llm-call";
 import {
-  buildChatProviderChain,
-  type ChatProviderId,
-} from "@/lib/ai/config";
-import { claudeChatJson } from "@/lib/ai/claude";
-import { ollamaChatJson } from "@/lib/ai/ollama";
-import { openaiChatJson } from "@/lib/ai/openai-chat";
+  createExtractionContext,
+  type ExtractionPipelineContext,
+} from "@/lib/extraction/pipeline/context";
 import {
   CLASSIFICATION_SYSTEM_PROMPT,
   EXTRACTION_SYSTEM_PROMPT,
@@ -14,45 +12,20 @@ export type LlmJsonOptions = {
   systemPrompt?: string;
 };
 
-async function callChatProvider(
-  provider: ChatProviderId,
-  systemPrompt: string,
-  userPrompt: string
-): Promise<{ content: string; model: string }> {
-  switch (provider) {
-    case "claude":
-      return claudeChatJson(systemPrompt, userPrompt);
-    case "openai":
-      return openaiChatJson(systemPrompt, userPrompt);
-    case "ollama":
-      return ollamaChatJson(systemPrompt, userPrompt);
-  }
-}
-
 /**
- * Call the configured chat provider chain and return raw JSON text.
- * External providers (Claude, OpenAI) fall back to Ollama when enabled.
+ * One-off LLM call without pipeline context (scripts/diagnostics).
+ * Prefer callLlmInContext during document ingestion.
  */
 export async function callLlmJson(
   userPrompt: string,
   options?: LlmJsonOptions
 ): Promise<{ content: string; model: string }> {
-  const systemPrompt = options?.systemPrompt ?? EXTRACTION_SYSTEM_PROMPT;
-  const chain = buildChatProviderChain();
-  const errors: string[] = [];
-
-  for (const provider of chain) {
-    try {
-      return await callChatProvider(provider, systemPrompt, userPrompt);
-    } catch (error) {
-      errors.push(
-        `${provider}: ${error instanceof Error ? error.message : "request failed"}`
-      );
-    }
-  }
-
-  throw new Error(errors.join("; ") || "No AI provider available");
+  const ctx = createExtractionContext();
+  const { content, model } = await callLlmInContext(ctx, userPrompt, options);
+  return { content, model };
 }
+
+export { callLlmInContext, createExtractionContext, type ExtractionPipelineContext };
 
 function stripJsonFence(content: string): string {
   const trimmed = content.trim();

@@ -1,10 +1,13 @@
 import type { ParsedDocument } from "@/lib/parsing/parse-document";
 import type { DealType, DocumentType } from "@/lib/db/schema";
+import { getClassificationMode } from "@/lib/ai/config";
 import {
   buildLlmClassificationText,
   classifyDocumentWithLlm,
 } from "@/lib/extraction/classify-document-llm";
 import type { ExtractionTraceCollector } from "@/lib/extraction/extraction-trace";
+import { HEURISTIC_MODEL } from "@/lib/extraction/pipeline/context";
+import type { ExtractionPipelineContext } from "@/lib/extraction/pipeline/context";
 
 const LOI_ALIASES = [
   "letter of intent",
@@ -34,6 +37,7 @@ export type IngestionClassification = {
   documentType: DocumentType;
   method: "llm" | "heuristic" | "filename";
   confidence?: string;
+  model?: string;
 };
 
 /** Header slice for type detection — not the metadata-scored section picker. */
@@ -46,8 +50,12 @@ function inferDealType(sample: string): DealType {
     sample.includes("purchase agreement") ||
     sample.includes("sale agreement") ||
     sample.includes("sale and purchase") ||
+    /letter of intent to purchase|intent to purchase|offer to purchase/i.test(
+      sample
+    ) ||
     (sample.includes("seller") && sample.includes("buyer")) ||
-    (sample.includes("seller") && sample.includes("purchaser"));
+    (sample.includes("seller") && sample.includes("purchaser")) ||
+    (sample.includes("buyer") && sample.includes("purchaser"));
   return isPurchase ? "PURCHASE" : "LEASE";
 }
 
@@ -76,24 +84,36 @@ export function classifyFromFilename(filename: string): {
 } | null {
   const lower = filename.toLowerCase();
 
-  if (/\bloi\b|letter.of.intent|heads.of.terms|term.sheet/.test(lower)) {
-    return {
-      dealType: /purchase|sale/.test(lower) ? "PURCHASE" : "LEASE",
-      documentType: "LOI",
-    };
-  }
-
-  if (/\[lease|\blease agreement\b/.test(lower)) {
+  if (/\[lease/.test(lower) || /\blease agreement\b/.test(lower)) {
     return { dealType: "LEASE", documentType: "OLA" };
   }
 
-  if (/\[purchase|\bpurchase agreement\b|\bsale agreement\b/.test(lower)) {
+  if (
+    /\[purchase/.test(lower) ||
+    /\bpurchase agreement\b/.test(lower) ||
+    /\bsale agreement\b/.test(lower)
+  ) {
     return { dealType: "PURCHASE", documentType: "OLA" };
+  }
+
+  const isLoiFilename =
+    /(?:^|[_\-.])loi(?:[_\-.]|$)|letter.of.intent|heads.of.terms|term.sheet/.test(
+      lower
+    );
+  if (!isLoiFilename) return null;
+
+  // Only skip LLM when deal type is explicit in the filename
+  if (/purchase|sale/.test(lower)) {
+    return { dealType: "PURCHASE", documentType: "LOI" };
+  }
+  if (/lease/.test(lower)) {
+    return { dealType: "LEASE", documentType: "LOI" };
   }
 
   return null;
 }
 
+/** Regex-based hints for deal type / document type. */
 export function classifyDocumentHeuristic(
   text: string,
   filename?: string
@@ -115,8 +135,17 @@ export function classifyDocumentHeuristic(
   }
 
   if (ola && loi) {
+    const header = sample.slice(0, 4_000);
+    const strongLoiHeader =
+      /letter of intent|heads of terms|term sheet|memorandum of understanding|indicative offer/i.test(
+        header
+      );
+    if (strongLoiHeader) {
+      return { dealType, documentType: "LOI" };
+    }
+
     const definitive =
-      /lease agreement|purchase agreement|sale agreement|master lease|\(as lessor\)|\(as lessee\)|as lessor|as lessee|lease supplement/i.test(
+      /(?:^|\n)\s*(?:aircraft\s+)?(?:operating\s+)?lease agreement|(?:^|\n)\s*(?:aircraft\s+)?(?:sale and )?purchase agreement|master lease agreement|\(as lessor\)|\(as lessee\)|as lessor|as lessee|lease supplement/i.test(
         sample
       );
     return { dealType, documentType: definitive ? "OLA" : "LOI" };
@@ -128,76 +157,92 @@ export function classifyDocumentHeuristic(
   return { dealType, documentType: "OTHER" };
 }
 
-function resolveUnknownType(
+function resolveHeuristicFallback(
   heuristic: { dealType: DealType; documentType: DocumentType },
   filename: string
-): IngestionClassification {
+): IngestionClassification | null {
+  if (heuristic.documentType !== "OTHER") {
+    return {
+      dealType: heuristic.dealType,
+      documentType: heuristic.documentType,
+      method: "heuristic",
+      confidence: "medium",
+      model: HEURISTIC_MODEL,
+    };
+  }
+
   const fromFilename = classifyFromFilename(filename);
   if (fromFilename) {
-    return { ...fromFilename, method: "filename" };
+    return { ...fromFilename, method: "filename", model: HEURISTIC_MODEL };
   }
+
+  return null;
+}
+
+/** In auto mode, skip classification LLM only when filename rules are confident. */
+function shouldSkipClassificationLlm(
+  filename: string
+): IngestionClassification | null {
+  const fromFilename = classifyFromFilename(filename);
+  if (!fromFilename) return null;
+
   return {
-    dealType: heuristic.dealType,
-    documentType: "LOI",
-    method: "heuristic",
-    confidence: "low",
+    ...fromFilename,
+    method: "filename",
+    confidence: "high",
+    model: HEURISTIC_MODEL,
   };
 }
 
-/** Classify document for ingestion: LLM when available, heuristic/filename fallback. */
+/**
+ * Classify document: LLM providers first (pinned per run), rules/filename when
+ * auto mode is confident, heuristic/filename as last resort if all LLMs fail.
+ */
 export async function classifyDocumentForIngestion(
   parsed: ParsedDocument,
   filename: string,
+  ctx: ExtractionPipelineContext,
   trace?: ExtractionTraceCollector
 ): Promise<IngestionClassification> {
+  const mode = getClassificationMode();
   const headerText = buildClassificationText(parsed);
   const heuristic = classifyDocumentHeuristic(headerText, filename);
   const llmInput = buildLlmClassificationText(parsed.fullText, filename);
 
-  const llm = await classifyDocumentWithLlm(parsed.fullText, filename);
-
-  if (llm && (llm.confidence === "high" || llm.confidence === "medium")) {
+  if (mode === "heuristic") {
+    const resolved = resolveHeuristicFallback(heuristic, filename);
+    if (!resolved) {
+      throw new Error("Document classification failed: unable to classify from rules");
+    }
     trace?.recordClassification({
-      text: llmInput,
-      model: llm.model,
-      dealType: llm.dealType,
-      documentType: llm.documentType,
-      method: "llm",
-      confidence: llm.confidence,
-      signals: llm.signals,
+      text: headerText,
+      dealType: resolved.dealType,
+      documentType: resolved.documentType,
+      method: resolved.method,
+      confidence: resolved.confidence ?? "low",
+      model: resolved.model,
     });
-    return {
-      dealType: llm.dealType,
-      documentType: llm.documentType,
-      method: "llm",
-      confidence: llm.confidence,
-    };
+    return resolved;
   }
 
-  if (llm && heuristic.documentType !== "OTHER") {
-    const agree =
-      llm.documentType === heuristic.documentType &&
-      llm.dealType === heuristic.dealType;
-    if (agree || llm.confidence === "low") {
+  if (mode === "auto") {
+    const skip = shouldSkipClassificationLlm(filename);
+    if (skip) {
       trace?.recordClassification({
-        text: llmInput,
-        model: llm.model,
-        dealType: llm.dealType,
-        documentType: llm.documentType,
-        method: "llm",
-        confidence: llm.confidence,
-        signals: llm.signals,
+        text: headerText,
+        dealType: skip.dealType,
+        documentType: skip.documentType,
+        method: skip.method,
+        confidence: skip.confidence ?? "high",
+        model: skip.model,
+        note: "skipped LLM — confident filename match",
       });
-      return {
-        dealType: llm.dealType,
-        documentType: llm.documentType,
-        method: "llm",
-        confidence: llm.confidence,
-      };
+      return skip;
     }
   }
 
-  if (llm && heuristic.documentType === "OTHER") {
+  try {
+    const llm = await classifyDocumentWithLlm(parsed.fullText, filename, ctx);
     trace?.recordClassification({
       text: llmInput,
       model: llm.model,
@@ -206,44 +251,28 @@ export async function classifyDocumentForIngestion(
       method: "llm",
       confidence: llm.confidence,
       signals: llm.signals,
-      note: "heuristic inconclusive — used LLM",
     });
     return {
       dealType: llm.dealType,
       documentType: llm.documentType,
       method: "llm",
       confidence: llm.confidence,
+      model: llm.model,
     };
-  }
+  } catch (error) {
+    const fallback = resolveHeuristicFallback(heuristic, filename);
+    if (!fallback) throw error;
 
-  if (heuristic.documentType !== "OTHER") {
     trace?.recordClassification({
       text: headerText,
-      dealType: heuristic.dealType,
-      documentType: heuristic.documentType,
-      method: "heuristic",
-      confidence: "medium",
+      dealType: fallback.dealType,
+      documentType: fallback.documentType,
+      method: fallback.method,
+      confidence: fallback.confidence ?? "low",
+      model: fallback.model,
+      note: `LLM failed — used ${fallback.method} fallback`,
+      error: error instanceof Error ? error.message : "classification failed",
     });
-    return {
-      dealType: heuristic.dealType,
-      documentType: heuristic.documentType,
-      method: "heuristic",
-      confidence: "medium",
-    };
+    return fallback;
   }
-
-  const resolved = resolveUnknownType(heuristic, filename);
-  trace?.recordClassification({
-    text: headerText,
-    dealType: resolved.dealType,
-    documentType: resolved.documentType,
-    method: resolved.method,
-    confidence: resolved.confidence ?? "low",
-    note:
-      resolved.confidence === "low"
-        ? "unclassified — used filename/heuristic fallback"
-        : undefined,
-  });
-
-  return resolved;
 }

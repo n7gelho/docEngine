@@ -1,11 +1,18 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { getClaudeModel, isClaudeConfigured } from "@/lib/ai/config";
+import {
+  getChatRequestTimeoutMs,
+  getClaudeModel,
+  isClaudeConfigured,
+} from "@/lib/ai/config";
 
 function getClaudeClient(): Anthropic {
   if (!isClaudeConfigured()) {
     throw new Error("Anthropic API key is not configured");
   }
-  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  return new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    timeout: getChatRequestTimeoutMs(),
+  });
 }
 
 export async function claudeChatJson(

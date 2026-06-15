@@ -7,6 +7,7 @@ import { extractLoiMetadata } from "@/lib/extraction/extract-metadata";
 import { extractOlaMetadata } from "@/lib/extraction/extract-ola";
 import { buildExtractionText } from "@/lib/extraction/extraction-text";
 import { ExtractionTraceCollector } from "@/lib/extraction/extraction-trace";
+import { createExtractionContext } from "@/lib/extraction/pipeline/context";
 import { mapExtractionToDocumentFields } from "@/lib/extraction/map-extraction-fields";
 import { SCHEMA_VERSION } from "@/lib/profiles/schema-registry";
 import { embedText, embedTexts, embeddingToSql } from "@/lib/embeddings/embed";
@@ -40,10 +41,12 @@ export async function processDocument(documentId: string): Promise<void> {
     const parsed = await parseDocument(buffer, doc.mimeType);
     const previewText = buildExtractionText(parsed);
     const trace = new ExtractionTraceCollector();
+    const pipelineCtx = createExtractionContext();
 
     const { dealType, documentType } = await classifyDocumentForIngestion(
       parsed,
       doc.filename,
+      pipelineCtx,
       trace
     );
 
@@ -56,6 +59,7 @@ export async function processDocument(documentId: string): Promise<void> {
       const olaOutcome = await extractOlaMetadata(
         parsed,
         { dealType, documentType: "OLA" },
+        pipelineCtx,
         trace
       );
       result = olaOutcome.result;
@@ -66,7 +70,9 @@ export async function processDocument(documentId: string): Promise<void> {
       const loiOutcome = await extractLoiMetadata(
         previewText,
         { dealType, documentType: "LOI" },
-        trace
+        pipelineCtx,
+        trace,
+        doc.filename
       );
       result = loiOutcome.result;
       model = loiOutcome.model;

@@ -36,6 +36,11 @@ export {
 } from "@/lib/extraction/ola-section-windows";
 export { validateFieldsAgainstSource } from "@/lib/extraction/validate-extraction";
 export type { ExtractionCoverage } from "@/lib/extraction/extraction-coverage";
+export {
+  parseExtractionCoverage,
+  formatCoverageSummary,
+} from "@/lib/extraction/extraction-coverage";
+export { createExtractionContext } from "@/lib/extraction/pipeline/context";
 export type {
   ExtractionHint,
   ExtractionOutcome,

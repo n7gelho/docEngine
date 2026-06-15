@@ -43,9 +43,10 @@ export function computeLoiCoverage(
 export function computeOlaCoverage(
   sections: Record<string, Record<string, ParsedFieldValue>>,
   sectionsLocated: number,
-  warnings: string[] = []
+  warnings: string[] = [],
+  dealType: DealType = "LEASE"
 ): ExtractionCoverage {
-  const profile = getOlaProfile("LEASE");
+  const profile = getOlaProfile(dealType);
   let fieldsFilled = 0;
   let fieldsTotal = 0;
   let tier1Filled = 0;
@@ -104,4 +105,35 @@ export function coverageToMetadataField(
     confidence: 1,
     rawLabel: "_extraction_coverage",
   };
+}
+
+export function parseExtractionCoverage(
+  metadata: Record<string, { value?: unknown }> | null | undefined
+): ExtractionCoverage | null {
+  const raw = metadata?._extraction_coverage?.value;
+  if (typeof raw !== "string") return null;
+  try {
+    const parsed = JSON.parse(raw) as ExtractionCoverage;
+    if (
+      parsed &&
+      typeof parsed.fieldsFilled === "number" &&
+      typeof parsed.fieldsTotal === "number"
+    ) {
+      return parsed;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export function formatCoverageSummary(coverage: ExtractionCoverage): string {
+  const pct =
+    coverage.fieldsTotal > 0
+      ? Math.round((coverage.fieldsFilled / coverage.fieldsTotal) * 100)
+      : 0;
+  if (coverage.documentType === "OLA") {
+    return `${coverage.fieldsFilled} / ${coverage.fieldsTotal} fields (${pct}%) · ${coverage.sectionsLocated ?? 0} / ${coverage.sectionsTotal ?? 0} sections located`;
+  }
+  return `${coverage.fieldsFilled} / ${coverage.fieldsTotal} fields (${pct}%)`;
 }

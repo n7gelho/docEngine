@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { ExtractionTracePanel } from "@/components/ExtractionTracePanel";
+import { ExtractionSummary, resolveDisplayedExtractionModel } from "@/components/ExtractionSummary";
 import { ProfileMetadataGrid, flattenMetadataForTable } from "@/components/ProfileMetadataGrid";
 import { parseExtractionTrace } from "@/lib/extraction/extraction-trace";
 import {
@@ -158,6 +159,10 @@ export default function DocumentDetailPage() {
     columnValues
   );
   const extractionTrace = parseExtractionTrace(document.metadata ?? null);
+  const displayedModel = resolveDisplayedExtractionModel(
+    document.extractionModel,
+    extractionTrace
+  );
   const deal = document.deal;
   const linkedCounterpart =
     document.documentType === "LOI"
@@ -222,6 +227,13 @@ export default function DocumentDetailPage() {
         />
       )}
 
+      <ExtractionSummary
+        documentType={document.documentType}
+        extractionModel={displayedModel}
+        metadata={document.metadata}
+        extractionTrace={extractionTrace}
+      />
+
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="card lg:col-span-2">
           <h2 className="mb-4 text-lg font-semibold">Extracted metadata</h2>
@@ -234,9 +246,9 @@ export default function DocumentDetailPage() {
         </div>
 
         <div className="card">
-          <h2 className="mb-4 text-lg font-semibold">Extraction details</h2>
+          <h2 className="mb-4 text-lg font-semibold">Processing info</h2>
           <dl className="grid gap-3 text-sm">
-            <Field label="Model" value={document.extractionModel} />
+            <Field label="Extraction model" value={displayedModel} />
             <Field label="Schema version" value={document.schemaVersion} />
             <Field
               label="Updated"

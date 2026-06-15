@@ -67,6 +67,21 @@ export function getClaudeModel(): string {
   return process.env.CLAUDE_MODEL ?? "claude-sonnet-4-20250514";
 }
 
+export type ClassificationMode = "auto" | "llm" | "heuristic";
+
+/** How document type is chosen. Default llm for accuracy; auto skips LLM only on fully explicit filenames. */
+export function getClassificationMode(): ClassificationMode {
+  const value = process.env.AI_CLASSIFICATION_MODE?.toLowerCase();
+  if (value === "auto" || value === "heuristic") return value;
+  return "llm";
+}
+
+/** Per-request timeout for external chat APIs (OpenAI, Claude). Default 60s. */
+export function getChatRequestTimeoutMs(): number {
+  const parsed = parseInt(process.env.AI_CHAT_TIMEOUT_MS ?? "60000", 10);
+  return Number.isNaN(parsed) || parsed <= 0 ? 60_000 : parsed;
+}
+
 /** Ordered chat providers to try for the current AI_PROVIDER setting. */
 export function buildChatProviderChain(): ChatProviderId[] {
   const preference = getAiProviderPreference();

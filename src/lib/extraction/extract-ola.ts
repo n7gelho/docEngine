@@ -9,7 +9,13 @@ import {
   ExtractionTraceCollector,
   type ExtractionTrace,
 } from "@/lib/extraction/extraction-trace";
-import { callLlmJson, parseJsonContent } from "@/lib/extraction/llm-json";
+import { parseJsonContent } from "@/lib/extraction/llm-json";
+import { callLlmInContext } from "@/lib/extraction/pipeline/llm-call";
+import {
+  trackModel,
+  type ExtractionPipelineContext,
+} from "@/lib/extraction/pipeline/context";
+import { isOlaSectionComplete } from "@/lib/extraction/pipeline/section-skip";
 import type { ParsedFieldValue } from "@/lib/extraction/normalize-extraction";
 import {
   normalizeFieldMap,
@@ -49,7 +55,6 @@ const OLA_SECTION_PASS_ORDER = [
 const PARALLEL_SECTION_BATCH = 3;
 const MIN_SECTION_TEXT_CHARS = 80;
 
-/** Skip tier-1 when parties section is already located with usable text. */
 const TIER1_SKIP_SECTIONS = new Set([
   "parties_and_recitals",
   "governing_law_and_jurisdiction",
@@ -133,11 +138,14 @@ function shouldSkipTier1(sectionTexts: OlaSectionText[]): boolean {
 
 async function extractTier1(
   coreText: string,
-  dealType: DealType
+  dealType: DealType,
+  ctx: ExtractionPipelineContext
 ): Promise<{ fields: Record<string, ParsedFieldValue>; model: string }> {
-  const { content, model } = await callLlmJson(
+  const { content, model } = await callLlmInContext(
+    ctx,
     buildOlaTier1Prompt(coreText, dealType)
   );
+  trackModel(ctx.model, model);
   const raw = parseJsonContent(content) as Record<string, unknown>;
   const fields =
     raw.fields && typeof raw.fields === "object"
@@ -165,26 +173,32 @@ async function extractSectionFields(
   sectionId: string,
   text: string,
   dealType: DealType,
+  ctx: ExtractionPipelineContext,
   tocContext?: string
-): Promise<Record<string, ParsedFieldValue>> {
+): Promise<{ fields: Record<string, ParsedFieldValue>; model: string }> {
   const profile = getOlaProfile(dealType);
   const section = profile.sections.find((s) => s.id === sectionId);
-  if (!section) return {};
+  if (!section) return { fields: {}, model: "" };
 
   const fieldKeys = section.fields.map((f) => f.key);
-  const { content } = await callLlmJson(
+  const { content, model } = await callLlmInContext(
+    ctx,
     buildOlaSectionPrompt(sectionId, fieldKeys, text, dealType, { tocContext })
   );
+  trackModel(ctx.model, model);
   const raw = parseJsonContent(content) as Record<string, unknown>;
   const fields = parseFlatSectionFields(raw, fieldKeys);
-  return validateFieldsAgainstSource(fields, text);
+  return {
+    fields: validateFieldsAgainstSource(fields, text),
+    model,
+  };
 }
 
 async function extractSectionWithRetries(
   sectionId: string,
   section: OlaSectionText,
   dealType: DealType,
-  model: string,
+  ctx: ExtractionPipelineContext,
   fullText: string,
   tocContext: string | undefined,
   warnings: string[],
@@ -193,83 +207,85 @@ async function extractSectionWithRetries(
   const profile = getOlaProfile(dealType);
   const sectionDef = profile.sections.find((s) => s.id === sectionId);
   const fieldsTotal = sectionDef?.fields.length ?? 0;
-  let text = section.text;
 
-  let fields = await extractSectionFields(sectionId, text, dealType, tocContext);
-  let filled = countFilledFields(fields);
+  const runPass = async (
+    text: string,
+    kind: "section" | "section_retry",
+    label: string
+  ) => {
+    const { fields, model } = await extractSectionFields(
+      sectionId,
+      text,
+      dealType,
+      ctx,
+      tocContext
+    );
+    const filled = countFilledFields(fields);
+    collector.recordLlmExtraction({
+      kind,
+      label,
+      text: kind === "section" ? section.text : text,
+      model,
+      sectionId,
+      located: true,
+      locationSource: section.locationSource,
+      tocLabel: section.tocLabel,
+      fieldsFilled: filled,
+      fieldsTotal,
+    });
+    return { fields, filled };
+  };
 
-  if (filled === 0 && text.length >= 400) {
-    warnings.push(`Section ${sectionId}: retrying with expanded text window`);
-    const expanded = expandSectionText(fullText, section, 2);
-    if (expanded.length > text.length) {
-      text = expanded;
-      fields = await extractSectionFields(sectionId, text, dealType, tocContext);
-      filled = countFilledFields(fields);
-      collector.recordLlmExtraction({
-        kind: "section_retry",
-        label: `Section retry: ${sectionId}`,
-        text,
-        model,
-        sectionId,
-        located: true,
-        locationSource: section.locationSource,
-        tocLabel: section.tocLabel,
-        fieldsFilled: filled,
-        fieldsTotal,
-      });
+  try {
+    const { fields, filled } = await runPass(
+      section.text,
+      "section",
+      `Section: ${sectionId}`
+    );
+    if (filled === 0) {
+      warnings.push(`Section ${sectionId}: LLM returned no filled fields`);
     }
-  }
+    return fields;
+  } catch (firstError) {
+    const message =
+      firstError instanceof Error ? firstError.message : "extraction failed";
 
-  if (filled === 0 && text.length >= 800) {
-    const maxExpanded = expandSectionText(fullText, section, 2.8);
-    if (maxExpanded.length > text.length) {
-      warnings.push(`Section ${sectionId}: second retry with larger window`);
-      fields = await extractSectionFields(
-        sectionId,
-        maxExpanded,
-        dealType,
-        tocContext
-      );
-      filled = countFilledFields(fields);
-      collector.recordLlmExtraction({
-        kind: "section_retry",
-        label: `Section retry 2: ${sectionId}`,
-        text: maxExpanded,
-        model,
-        sectionId,
-        located: true,
-        locationSource: section.locationSource,
-        tocLabel: section.tocLabel,
-        fieldsFilled: filled,
-        fieldsTotal,
-      });
+    if (section.text.length >= 400) {
+      const expanded = expandSectionText(fullText, section, 2);
+      if (expanded.length > section.text.length) {
+        try {
+          warnings.push(
+            `Section ${sectionId}: retrying after error (${message})`
+          );
+          const { fields, filled } = await runPass(
+            expanded,
+            "section_retry",
+            `Section retry: ${sectionId}`
+          );
+          if (filled === 0) {
+            warnings.push(`Section ${sectionId}: retry returned no filled fields`);
+          }
+          return fields;
+        } catch (retryError) {
+          const retryMessage =
+            retryError instanceof Error
+              ? retryError.message
+              : "retry failed";
+          warnings.push(`Section ${sectionId}: ${retryMessage}`);
+          throw retryError;
+        }
+      }
     }
+
+    warnings.push(`Section ${sectionId}: ${message}`);
+    throw firstError;
   }
-
-  collector.recordLlmExtraction({
-    kind: "section",
-    label: `Section: ${sectionId}`,
-    text: section.text,
-    model,
-    sectionId,
-    located: true,
-    locationSource: section.locationSource,
-    tocLabel: section.tocLabel,
-    fieldsFilled: filled,
-    fieldsTotal,
-  });
-
-  if (filled === 0) {
-    warnings.push(`Section ${sectionId}: LLM returned no filled fields`);
-  }
-
-  return fields;
 }
 
 async function runSectionBatch(
   batch: Array<{ sectionId: string; text: string; section: OlaSectionText }>,
   dealType: DealType,
-  model: string,
+  ctx: ExtractionPipelineContext,
   fullText: string,
   tocMapped: ReturnType<typeof getTocMappedSections>,
   warnings: string[],
@@ -283,7 +299,7 @@ async function runSectionBatch(
           sectionId,
           section,
           dealType,
-          model,
+          ctx,
           fullText,
           tocContext,
           warnings,
@@ -293,7 +309,6 @@ async function runSectionBatch(
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "extraction failed";
-        warnings.push(`Section ${sectionId}: ${message}`);
         const profile = getOlaProfile(dealType);
         const fieldsTotal =
           profile.sections.find((s) => s.id === sectionId)?.fields.length ?? 0;
@@ -301,7 +316,7 @@ async function runSectionBatch(
           kind: "section",
           label: `Section: ${sectionId}`,
           text: section.text,
-          model,
+          model: ctx.model.primary ?? undefined,
           sectionId,
           located: true,
           locationSource: section.locationSource,
@@ -320,6 +335,7 @@ async function runSectionBatch(
 export async function extractOlaMetadata(
   parsed: ParsedDocument,
   hint: ExtractionHint,
+  ctx: ExtractionPipelineContext,
   trace?: ExtractionTraceCollector
 ): Promise<{
   result: OlaExtractionResult;
@@ -331,7 +347,6 @@ export async function extractOlaMetadata(
   const dealType = hint.dealType ?? "LEASE";
   const warnings: string[] = [];
   const sections: Record<string, Record<string, ParsedFieldValue>> = {};
-  let model = "heuristic-v3";
 
   const sectionTexts = getOlaSectionTexts(parsed, collector);
   const tocMapped = getTocMappedSections(parsed.fullText);
@@ -351,8 +366,7 @@ export async function extractOlaMetadata(
     });
   } else {
     try {
-      const tier1 = await extractTier1(coreText, dealType);
-      model = tier1.model;
+      const tier1 = await extractTier1(coreText, dealType, ctx);
       collector.recordLlmExtraction({
         kind: "tier1",
         label: "OLA tier-1 header",
@@ -376,7 +390,7 @@ export async function extractOlaMetadata(
         kind: "tier1",
         label: "OLA tier-1 header",
         text: coreText,
-        model,
+        model: ctx.model.primary ?? undefined,
         pageNumbers: selection.selectedPageNumbers,
         fieldsFilled: 0,
         fieldsTotal: 7,
@@ -387,7 +401,17 @@ export async function extractOlaMetadata(
 
   const passSections = OLA_SECTION_PASS_ORDER.filter((sectionId) => {
     const st = sectionTexts.find((s) => s.sectionId === sectionId);
-    return st?.located && (st.text?.length ?? 0) >= MIN_SECTION_TEXT_CHARS;
+    if (!st?.located || (st.text?.length ?? 0) < MIN_SECTION_TEXT_CHARS) {
+      return false;
+    }
+    if (isOlaSectionComplete(sectionId, dealType, sections)) {
+      collector.recordSectionSkip({
+        sectionId,
+        reason: "All profile fields already filled — skipped LLM pass",
+      });
+      return false;
+    }
+    return true;
   });
 
   for (let i = 0; i < passSections.length; i += PARALLEL_SECTION_BATCH) {
@@ -401,7 +425,7 @@ export async function extractOlaMetadata(
     const batchResults = await runSectionBatch(
       batch,
       dealType,
-      model,
+      ctx,
       parsed.fullText,
       tocMapped,
       warnings,
@@ -428,14 +452,20 @@ export async function extractOlaMetadata(
     }
   }
 
+  if (!ctx.model.primary) {
+    throw new Error(
+      "OLA extraction failed: no AI provider completed successfully"
+    );
+  }
+
   return {
     result: {
       dealType,
       documentType: "OLA",
       sections: sections as Record<string, Record<string, FieldValue>>,
     },
-    model,
-    coverage: computeOlaCoverage(sections, sectionsLocated, warnings),
+    model: ctx.model.primary,
+    coverage: computeOlaCoverage(sections, sectionsLocated, warnings, dealType),
     trace: collector.toTrace(),
   };
 }

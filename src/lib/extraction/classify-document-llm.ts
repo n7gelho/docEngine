@@ -1,6 +1,8 @@
 import type { DealType, DocumentType } from "@/lib/db/schema";
 import { hasChatProviderAvailable } from "@/lib/ai/config";
-import { callLlmJson, parseJsonContent } from "@/lib/extraction/llm-json";
+import { parseJsonContent } from "@/lib/extraction/llm-json";
+import { callLlmInContext } from "@/lib/extraction/pipeline/llm-call";
+import type { ExtractionPipelineContext } from "@/lib/extraction/pipeline/context";
 import {
   buildClassificationPrompt,
   CLASSIFICATION_SYSTEM_PROMPT,
@@ -43,33 +45,36 @@ export function buildLlmClassificationText(
 
 export async function classifyDocumentWithLlm(
   fullText: string,
-  filename: string
-): Promise<LlmClassificationResult | null> {
-  if (!hasChatProviderAvailable()) return null;
-
-  try {
-    const input = buildLlmClassificationText(fullText, filename);
-    const { content, model } = await callLlmJson(buildClassificationPrompt(input), {
-      systemPrompt: CLASSIFICATION_SYSTEM_PROMPT,
-    });
-    const raw = parseJsonContent(content) as Record<string, unknown>;
-
-    const documentType = normalizeDocumentType(raw.documentType);
-    const dealType = normalizeDealType(raw.dealType);
-    if (!documentType || !dealType) return null;
-
-    const signals = Array.isArray(raw.signals)
-      ? raw.signals.filter((s): s is string => typeof s === "string")
-      : [];
-
-    return {
-      dealType,
-      documentType,
-      confidence: normalizeConfidence(raw.confidence),
-      signals,
-      model,
-    };
-  } catch {
-    return null;
+  filename: string,
+  ctx: ExtractionPipelineContext
+): Promise<LlmClassificationResult> {
+  if (!hasChatProviderAvailable()) {
+    throw new Error("No AI chat provider available for classification");
   }
+
+  const input = buildLlmClassificationText(fullText, filename);
+  const { content, model } = await callLlmInContext(
+    ctx,
+    buildClassificationPrompt(input),
+    { systemPrompt: CLASSIFICATION_SYSTEM_PROMPT }
+  );
+  const raw = parseJsonContent(content) as Record<string, unknown>;
+
+  const documentType = normalizeDocumentType(raw.documentType);
+  const dealType = normalizeDealType(raw.dealType);
+  if (!documentType || !dealType) {
+    throw new Error("Classification LLM returned invalid document or deal type");
+  }
+
+  const signals = Array.isArray(raw.signals)
+    ? raw.signals.filter((s): s is string => typeof s === "string")
+    : [];
+
+  return {
+    dealType,
+    documentType,
+    confidence: normalizeConfidence(raw.confidence),
+    signals,
+    model,
+  };
 }

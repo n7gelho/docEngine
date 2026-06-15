@@ -134,7 +134,7 @@ export class ExtractionTraceCollector {
     kind: "tier1" | "loi" | "section" | "section_retry";
     label: string;
     text: string;
-    model: string;
+    model?: string;
     sectionId?: string;
     located?: boolean;
     locationSource?: LocationSource;

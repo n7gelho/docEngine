@@ -4,6 +4,12 @@ import {
   computeOlaCoverage,
   type ExtractionCoverage,
 } from "@/lib/extraction/extraction-coverage";
+import { describeExtractionSelection } from "@/lib/extraction/extraction-text";
+import {
+  ExtractionTraceCollector,
+  type ExtractionTrace,
+} from "@/lib/extraction/extraction-trace";
+import { callLlmJson, parseJsonContent } from "@/lib/extraction/llm-json";
 import type { ParsedFieldValue } from "@/lib/extraction/normalize-extraction";
 import {
   normalizeFieldMap,
@@ -11,17 +17,21 @@ import {
 } from "@/lib/extraction/normalize-extraction";
 import {
   buildOlaCorePagesText,
+  expandSectionText,
   getOlaSectionTexts,
+  getTocMappedSections,
+  type OlaSectionText,
 } from "@/lib/extraction/ola-section-windows";
 import {
   buildOlaSectionPrompt,
   buildOlaTier1Prompt,
 } from "@/lib/extraction/prompt";
-import { callLlmJson, parseJsonContent } from "@/lib/extraction/llm-json";
+import { buildTocOrientationBlock } from "@/lib/extraction/toc-parser";
 import type {
   ExtractionHint,
   OlaExtractionResult,
 } from "@/lib/extraction/types";
+import { validateFieldsAgainstSource } from "@/lib/extraction/validate-extraction";
 import { getOlaProfile } from "@/lib/profiles/schema-registry";
 
 const OLA_SECTION_PASS_ORDER = [
@@ -38,6 +48,18 @@ const OLA_SECTION_PASS_ORDER = [
 
 const PARALLEL_SECTION_BATCH = 3;
 const MIN_SECTION_TEXT_CHARS = 80;
+
+/** Skip tier-1 when parties section is already located with usable text. */
+const TIER1_SKIP_SECTIONS = new Set([
+  "parties_and_recitals",
+  "governing_law_and_jurisdiction",
+]);
+
+function countFilledFields(fields: Record<string, ParsedFieldValue>): number {
+  return Object.values(fields).filter(
+    (f) => f.value !== null && String(f.value).trim() !== ""
+  ).length;
+}
 
 function mergeFieldMaps(
   target: Record<string, ParsedFieldValue>,
@@ -73,8 +95,8 @@ function tier1ToSections(
 
   const partyKeys =
     dealType === "LEASE"
-      ? ["counterparty", "lessor_entity", "lessee_entity", "aircraft", "msn"]
-      : ["counterparty", "seller_entity", "buyer_entity", "aircraft", "msn"];
+      ? ["lessor_entity", "lessee_entity", "aircraft", "msn"]
+      : ["seller_entity", "buyer_entity", "aircraft", "msn"];
 
   for (const key of partyKeys) {
     if (tier1Fields[key]) parties[key] = tier1Fields[key];
@@ -91,6 +113,24 @@ function tier1ToSections(
   };
 }
 
+function normalizeOlaPartyFields(
+  fields: Record<string, ParsedFieldValue>
+): Record<string, ParsedFieldValue> {
+  const out = { ...fields };
+  if (out.lessor && !out.lessor_entity) out.lessor_entity = out.lessor;
+  if (out.lessee && !out.lessee_entity) out.lessee_entity = out.lessee;
+  if (out.seller && !out.seller_entity) out.seller_entity = out.seller;
+  if (out.buyer && !out.buyer_entity) out.buyer_entity = out.buyer;
+  return out;
+}
+
+function shouldSkipTier1(sectionTexts: OlaSectionText[]): boolean {
+  return Array.from(TIER1_SKIP_SECTIONS).every((sectionId) => {
+    const st = sectionTexts.find((s) => s.sectionId === sectionId);
+    return st?.located && (st.text?.length ?? 0) >= MIN_SECTION_TEXT_CHARS;
+  });
+}
+
 async function extractTier1(
   coreText: string,
   dealType: DealType
@@ -105,24 +145,27 @@ async function extractTier1(
           normalizeFieldMap(raw.fields as Record<string, unknown>)
         )
       : normalizeOlaPartyFields(parseFlatSectionFields(raw));
-  return { fields, model };
+  return {
+    fields: validateFieldsAgainstSource(fields, coreText),
+    model,
+  };
 }
 
-function normalizeOlaPartyFields(
-  fields: Record<string, ParsedFieldValue>
-): Record<string, ParsedFieldValue> {
-  const out = { ...fields };
-  if (out.lessor && !out.lessor_entity) out.lessor_entity = out.lessor;
-  if (out.lessee && !out.lessee_entity) out.lessee_entity = out.lessee;
-  if (out.seller && !out.seller_entity) out.seller_entity = out.seller;
-  if (out.buyer && !out.buyer_entity) out.buyer_entity = out.buyer;
-  return out;
+function buildTocContext(
+  section: OlaSectionText,
+  tocMapped: ReturnType<typeof getTocMappedSections>
+): string | undefined {
+  const orientation = buildTocOrientationBlock(tocMapped, section.sectionId);
+  if (orientation) return orientation;
+  if (section.tocLabel) return `- TOC entry: ${section.tocLabel}`;
+  return undefined;
 }
 
 async function extractSectionFields(
   sectionId: string,
   text: string,
-  dealType: DealType
+  dealType: DealType,
+  tocContext?: string
 ): Promise<Record<string, ParsedFieldValue>> {
   const profile = getOlaProfile(dealType);
   const section = profile.sections.find((s) => s.id === sectionId);
@@ -130,34 +173,142 @@ async function extractSectionFields(
 
   const fieldKeys = section.fields.map((f) => f.key);
   const { content } = await callLlmJson(
-    buildOlaSectionPrompt(sectionId, fieldKeys, text, dealType)
+    buildOlaSectionPrompt(sectionId, fieldKeys, text, dealType, { tocContext })
   );
   const raw = parseJsonContent(content) as Record<string, unknown>;
-  return parseFlatSectionFields(raw, fieldKeys);
+  const fields = parseFlatSectionFields(raw, fieldKeys);
+  return validateFieldsAgainstSource(fields, text);
+}
+
+async function extractSectionWithRetries(
+  sectionId: string,
+  section: OlaSectionText,
+  dealType: DealType,
+  model: string,
+  fullText: string,
+  tocContext: string | undefined,
+  warnings: string[],
+  collector: ExtractionTraceCollector
+): Promise<Record<string, ParsedFieldValue>> {
+  const profile = getOlaProfile(dealType);
+  const sectionDef = profile.sections.find((s) => s.id === sectionId);
+  const fieldsTotal = sectionDef?.fields.length ?? 0;
+  let text = section.text;
+
+  let fields = await extractSectionFields(sectionId, text, dealType, tocContext);
+  let filled = countFilledFields(fields);
+
+  if (filled === 0 && text.length >= 400) {
+    warnings.push(`Section ${sectionId}: retrying with expanded text window`);
+    const expanded = expandSectionText(fullText, section, 2);
+    if (expanded.length > text.length) {
+      text = expanded;
+      fields = await extractSectionFields(sectionId, text, dealType, tocContext);
+      filled = countFilledFields(fields);
+      collector.recordLlmExtraction({
+        kind: "section_retry",
+        label: `Section retry: ${sectionId}`,
+        text,
+        model,
+        sectionId,
+        located: true,
+        locationSource: section.locationSource,
+        tocLabel: section.tocLabel,
+        fieldsFilled: filled,
+        fieldsTotal,
+      });
+    }
+  }
+
+  if (filled === 0 && text.length >= 800) {
+    const maxExpanded = expandSectionText(fullText, section, 2.8);
+    if (maxExpanded.length > text.length) {
+      warnings.push(`Section ${sectionId}: second retry with larger window`);
+      fields = await extractSectionFields(
+        sectionId,
+        maxExpanded,
+        dealType,
+        tocContext
+      );
+      filled = countFilledFields(fields);
+      collector.recordLlmExtraction({
+        kind: "section_retry",
+        label: `Section retry 2: ${sectionId}`,
+        text: maxExpanded,
+        model,
+        sectionId,
+        located: true,
+        locationSource: section.locationSource,
+        tocLabel: section.tocLabel,
+        fieldsFilled: filled,
+        fieldsTotal,
+      });
+    }
+  }
+
+  collector.recordLlmExtraction({
+    kind: "section",
+    label: `Section: ${sectionId}`,
+    text: section.text,
+    model,
+    sectionId,
+    located: true,
+    locationSource: section.locationSource,
+    tocLabel: section.tocLabel,
+    fieldsFilled: filled,
+    fieldsTotal,
+  });
+
+  if (filled === 0) {
+    warnings.push(`Section ${sectionId}: LLM returned no filled fields`);
+  }
+
+  return fields;
 }
 
 async function runSectionBatch(
-  batch: Array<{ sectionId: string; text: string }>,
+  batch: Array<{ sectionId: string; text: string; section: OlaSectionText }>,
   dealType: DealType,
-  warnings: string[]
+  model: string,
+  fullText: string,
+  tocMapped: ReturnType<typeof getTocMappedSections>,
+  warnings: string[],
+  collector: ExtractionTraceCollector
 ): Promise<Record<string, Record<string, ParsedFieldValue>>> {
   const results = await Promise.all(
-    batch.map(async ({ sectionId, text }) => {
+    batch.map(async ({ sectionId, section }) => {
+      const tocContext = buildTocContext(section, tocMapped);
       try {
-        const fields = await extractSectionFields(sectionId, text, dealType);
-        const filled = Object.values(fields).filter(
-          (f) => f.value !== null && String(f.value).trim() !== ""
-        ).length;
-        if (filled === 0) {
-          warnings.push(`Section ${sectionId}: LLM returned no filled fields`);
-        }
+        const fields = await extractSectionWithRetries(
+          sectionId,
+          section,
+          dealType,
+          model,
+          fullText,
+          tocContext,
+          warnings,
+          collector
+        );
         return { sectionId, fields };
       } catch (error) {
-        warnings.push(
-          `Section ${sectionId}: ${
-            error instanceof Error ? error.message : "extraction failed"
-          }`
-        );
+        const message =
+          error instanceof Error ? error.message : "extraction failed";
+        warnings.push(`Section ${sectionId}: ${message}`);
+        const profile = getOlaProfile(dealType);
+        const fieldsTotal =
+          profile.sections.find((s) => s.id === sectionId)?.fields.length ?? 0;
+        collector.recordLlmExtraction({
+          kind: "section",
+          label: `Section: ${sectionId}`,
+          text: section.text,
+          model,
+          sectionId,
+          located: true,
+          locationSource: section.locationSource,
+          fieldsFilled: 0,
+          fieldsTotal,
+          error: message,
+        });
         return { sectionId, fields: {} as Record<string, ParsedFieldValue> };
       }
     })
@@ -168,34 +319,70 @@ async function runSectionBatch(
 
 export async function extractOlaMetadata(
   parsed: ParsedDocument,
-  hint: ExtractionHint
+  hint: ExtractionHint,
+  trace?: ExtractionTraceCollector
 ): Promise<{
   result: OlaExtractionResult;
   model: string;
   coverage: ExtractionCoverage;
+  trace: ExtractionTrace;
 }> {
+  const collector = trace ?? new ExtractionTraceCollector();
   const dealType = hint.dealType ?? "LEASE";
   const warnings: string[] = [];
   const sections: Record<string, Record<string, ParsedFieldValue>> = {};
   let model = "heuristic-v3";
 
-  const sectionTexts = getOlaSectionTexts(parsed);
+  const sectionTexts = getOlaSectionTexts(parsed, collector);
+  const tocMapped = getTocMappedSections(parsed.fullText);
   const sectionsLocated = sectionTexts.filter((s) => s.located).length;
+  const coreText = buildOlaCorePagesText(parsed);
+  const selection = describeExtractionSelection(parsed);
+  const skipTier1 = shouldSkipTier1(sectionTexts);
 
-  try {
-    const tier1 = await extractTier1(buildOlaCorePagesText(parsed), dealType);
-    model = tier1.model;
-    for (const [sectionId, fields] of Object.entries(
-      tier1ToSections(tier1.fields, dealType)
-    )) {
-      sections[sectionId] = { ...(sections[sectionId] ?? {}), ...fields };
+  if (skipTier1) {
+    collector.record({
+      kind: "tier1",
+      label: "OLA tier-1 header (skipped)",
+      inputChars: 0,
+      inputPreview: "",
+      outputSummary:
+        "Skipped — parties and governing law sections already located via TOC/regex",
+    });
+  } else {
+    try {
+      const tier1 = await extractTier1(coreText, dealType);
+      model = tier1.model;
+      collector.recordLlmExtraction({
+        kind: "tier1",
+        label: "OLA tier-1 header",
+        text: coreText,
+        model: tier1.model,
+        pageNumbers: selection.selectedPageNumbers,
+        fieldsFilled: countFilledFields(tier1.fields),
+        fieldsTotal: 7,
+      });
+
+      for (const [sectionId, fields] of Object.entries(
+        tier1ToSections(tier1.fields, dealType)
+      )) {
+        sections[sectionId] = { ...(sections[sectionId] ?? {}), ...fields };
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "extraction failed";
+      warnings.push(`Tier-1 header: ${message}`);
+      collector.recordLlmExtraction({
+        kind: "tier1",
+        label: "OLA tier-1 header",
+        text: coreText,
+        model,
+        pageNumbers: selection.selectedPageNumbers,
+        fieldsFilled: 0,
+        fieldsTotal: 7,
+        error: message,
+      });
     }
-  } catch (error) {
-    warnings.push(
-      `Tier-1 header: ${
-        error instanceof Error ? error.message : "extraction failed"
-      }`
-    );
   }
 
   const passSections = OLA_SECTION_PASS_ORDER.filter((sectionId) => {
@@ -208,20 +395,30 @@ export async function extractOlaMetadata(
       (sectionId) => ({
         sectionId,
         text: sectionTexts.find((s) => s.sectionId === sectionId)!.text,
+        section: sectionTexts.find((s) => s.sectionId === sectionId)!,
       })
     );
-    const batchResults = await runSectionBatch(batch, dealType, warnings);
+    const batchResults = await runSectionBatch(
+      batch,
+      dealType,
+      model,
+      parsed.fullText,
+      tocMapped,
+      warnings,
+      collector
+    );
     for (const [sectionId, fields] of Object.entries(batchResults)) {
       sections[sectionId] = sections[sectionId] ?? {};
-      const preferSection =
-        sectionId !== "parties_and_recitals" &&
-        sectionId !== "definitions_and_interpretation";
-      mergeFieldMaps(sections[sectionId], fields, preferSection);
+      mergeFieldMaps(sections[sectionId], fields, true);
     }
   }
 
   for (const st of sectionTexts) {
     if (st.located) continue;
+    collector.recordSectionSkip({
+      sectionId: st.sectionId,
+      reason: "Section not located in document (TOC + regex)",
+    });
     const sectionFields = sections[st.sectionId] ?? {};
     const hasFilledFields = Object.values(sectionFields).some(
       (f) => f.value !== null && String(f.value).trim() !== ""
@@ -239,5 +436,6 @@ export async function extractOlaMetadata(
     },
     model,
     coverage: computeOlaCoverage(sections, sectionsLocated, warnings),
+    trace: collector.toTrace(),
   };
 }

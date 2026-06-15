@@ -6,7 +6,7 @@ Ingestion engine for **purchase** and **lease** aircraft deal documents (**LOIs*
 
 - **Ingestion** — Upload PDF/DOCX individually or ingest a folder of deal documents
 - **Deal classification** — Purchase vs Lease, with LOI/OLA document role detection (including common alternative titles)
-- **Metadata extraction** — Profile-based LOI (7 fields) and OLA (9 sections, 35 fields) via local Ollama or optional OpenAI
+- **Metadata extraction** — Profile-based LOI (7 fields) and OLA (9 sections, 35 fields) via local Ollama, Anthropic Claude, or OpenAI
 - **Metadata filters** — Filter by deal type, document type, parties, aircraft, jurisdiction, and OLA section fields
 - **LOI ↔ OLA linking** — Auto-match and manually link LOIs and OLAs (same deal type only)
 - **Paginated library** — Browse documents 20 per page at `/documents`
@@ -17,7 +17,7 @@ Ingestion engine for **purchase** and **lease** aircraft deal documents (**LOIs*
 - Next.js 15 (App Router), React, Tailwind CSS
 - PostgreSQL + pgvector
 - Drizzle ORM
-- **Ollama** (local LLM + embeddings, recommended) or OpenAI (optional cloud fallback)
+- **Ollama** (local LLM + embeddings, recommended) or **Anthropic Claude** / **OpenAI** (optional cloud)
 
 ## Prerequisites
 
@@ -55,7 +55,11 @@ Key variables:
 | Variable | Purpose |
 |----------|---------|
 | `DATABASE_URL` | PostgreSQL connection (default works with Docker Compose) |
-| `AI_PROVIDER=auto` | Ollama first, then OpenAI, then heuristic fallback |
+| `AI_PROVIDER=auto` | Claude (if key) → OpenAI (if key) → Ollama |
+| `AI_CHAT_FALLBACK_OLLAMA=true` | When primary chat provider fails, try Ollama |
+| `AI_EMBEDDING_PROVIDER=auto` | Ollama → OpenAI → hash fallback for embeddings |
+| `ANTHROPIC_API_KEY` | Required for `AI_PROVIDER=claude` |
+| `CLAUDE_MODEL` | Claude model id (default `claude-sonnet-4-20250514`) |
 | `EXTRACTION_MAX_PAGES=3` | Pages sent to LLM for LOI / OLA header extraction |
 | `EXTRACTION_SCAN_PAGES=25` | Pages scanned to skip cover/TOC |
 | `EMBEDDING_DIMENSIONS=768` | For `nomic-embed-text` |
@@ -75,7 +79,7 @@ Open [http://localhost:3000](http://localhost:3000).
 Upload (PDF/DOCX)
   → Parse text + pages
   → Classify: dealType (PURCHASE|LEASE) + documentType (LOI|OLA) from document header + filename
-  → Extract metadata (Ollama / OpenAI / heuristic)
+  → Extract metadata (Claude / OpenAI / Ollama, with Ollama fallback)
   → Chunk full document + embed (pgvector)
   → Store in PostgreSQL
   → Auto-link LOI ↔ OLA pairs
@@ -88,7 +92,7 @@ Upload (PDF/DOCX)
 2. **Section passes** — Locate 9 contract sections (regex + keyword fallback), run parallel LLM calls per section with flat JSON output
 3. **Coverage** — Stored in `metadata._extraction_coverage` (fields filled, sections located, warnings)
 
-**AI fallback chain** (`AI_PROVIDER=auto`): Ollama → OpenAI (if configured) → regex heuristic.
+**AI fallback chain** (`AI_PROVIDER=claude` or `openai`): primary provider → Ollama (when `AI_CHAT_FALLBACK_OLLAMA=true`). LOI also has regex heuristic when `AI_PROVIDER=auto` and all chat providers fail.
 
 ## API
 

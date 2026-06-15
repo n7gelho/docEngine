@@ -56,7 +56,6 @@ export function computeOlaCoverage(
     "governing_law_and_jurisdiction",
   ]);
   const tier1FieldKeys = new Set([
-    "counterparty",
     "aircraft",
     "msn",
     "governing_law",

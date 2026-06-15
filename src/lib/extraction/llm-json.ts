@@ -1,63 +1,67 @@
-import OpenAI from "openai";
 import {
-  getAiProviderPreference,
-  isOpenAiConfigured,
+  buildChatProviderChain,
+  type ChatProviderId,
 } from "@/lib/ai/config";
+import { claudeChatJson } from "@/lib/ai/claude";
 import { ollamaChatJson } from "@/lib/ai/ollama";
-import { EXTRACTION_SYSTEM_PROMPT } from "@/lib/extraction/prompt";
+import { openaiChatJson } from "@/lib/ai/openai-chat";
+import {
+  CLASSIFICATION_SYSTEM_PROMPT,
+  EXTRACTION_SYSTEM_PROMPT,
+} from "@/lib/extraction/prompt";
 
-function getOpenAIClient(): OpenAI | null {
-  if (!isOpenAiConfigured()) return null;
-  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-}
+export type LlmJsonOptions = {
+  systemPrompt?: string;
+};
 
-/** Call Ollama or OpenAI and return raw JSON text from the model. */
-export async function callLlmJson(
+async function callChatProvider(
+  provider: ChatProviderId,
+  systemPrompt: string,
   userPrompt: string
 ): Promise<{ content: string; model: string }> {
-  const preference = getAiProviderPreference();
+  switch (provider) {
+    case "claude":
+      return claudeChatJson(systemPrompt, userPrompt);
+    case "openai":
+      return openaiChatJson(systemPrompt, userPrompt);
+    case "ollama":
+      return ollamaChatJson(systemPrompt, userPrompt);
+  }
+}
+
+/**
+ * Call the configured chat provider chain and return raw JSON text.
+ * External providers (Claude, OpenAI) fall back to Ollama when enabled.
+ */
+export async function callLlmJson(
+  userPrompt: string,
+  options?: LlmJsonOptions
+): Promise<{ content: string; model: string }> {
+  const systemPrompt = options?.systemPrompt ?? EXTRACTION_SYSTEM_PROMPT;
+  const chain = buildChatProviderChain();
   const errors: string[] = [];
 
-  if (preference === "ollama" || preference === "auto") {
+  for (const provider of chain) {
     try {
-      const { content, model } = await ollamaChatJson(
-        EXTRACTION_SYSTEM_PROMPT,
-        userPrompt
-      );
-      return { content, model };
+      return await callChatProvider(provider, systemPrompt, userPrompt);
     } catch (error) {
       errors.push(
-        error instanceof Error ? error.message : "Ollama extraction failed"
+        `${provider}: ${error instanceof Error ? error.message : "request failed"}`
       );
-      if (preference === "ollama") throw new Error(errors.join("; "));
-    }
-  }
-
-  if (
-    (preference === "openai" || preference === "auto") &&
-    isOpenAiConfigured()
-  ) {
-    const client = getOpenAIClient();
-    if (client) {
-      const model = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
-      const response = await client.chat.completions.create({
-        model,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
-          { role: "user", content: userPrompt },
-        ],
-        temperature: 0.1,
-      });
-      const content = response.choices[0]?.message?.content;
-      if (!content) throw new Error("Empty response from extraction model");
-      return { content, model };
     }
   }
 
   throw new Error(errors.join("; ") || "No AI provider available");
 }
 
-export function parseJsonContent(content: string): unknown {
-  return JSON.parse(content);
+function stripJsonFence(content: string): string {
+  const trimmed = content.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/i);
+  return fenced ? fenced[1].trim() : trimmed;
 }
+
+export function parseJsonContent(content: string): unknown {
+  return JSON.parse(stripJsonFence(content));
+}
+
+export { CLASSIFICATION_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT };

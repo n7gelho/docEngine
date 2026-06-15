@@ -25,7 +25,6 @@ export function extractLoiHeuristic(
         value: lessee[1].trim().split("\n")[0].trim(),
         confidence: 0.6,
       };
-      fields.counterparty = { ...fields.lessee, rawLabel: "counterparty" };
     }
   } else {
     const seller = text.match(
@@ -45,7 +44,6 @@ export function extractLoiHeuristic(
         value: buyer[1].trim().split("\n")[0].trim(),
         confidence: 0.6,
       };
-      fields.counterparty = { ...fields.buyer, rawLabel: "counterparty" };
     }
   }
 

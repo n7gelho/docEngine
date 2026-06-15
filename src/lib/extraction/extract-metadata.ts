@@ -1,9 +1,10 @@
 import {
   getAiProviderPreference,
-  isOpenAiConfigured,
+  hasChatProviderAvailable,
 } from "@/lib/ai/config";
 import type { DealType, DocumentType } from "@/lib/db/schema";
 import { classifyDocumentHeuristic } from "@/lib/extraction/classify-document";
+import { ExtractionTraceCollector } from "@/lib/extraction/extraction-trace";
 import {
   computeLoiCoverage,
   type ExtractionCoverage,
@@ -16,13 +17,14 @@ import {
   type ParsedFieldValue,
 } from "@/lib/extraction/normalize-extraction";
 import { buildLoiExtractionPrompt } from "@/lib/extraction/prompt";
+import { validateFieldsAgainstSource } from "@/lib/extraction/validate-extraction";
 import {
   loiExtractionSchema,
   type ExtractionHint,
   type ExtractionOutcome,
   type LoiExtractionResult,
 } from "@/lib/extraction/types";
-import { SCHEMA_VERSION } from "@/lib/profiles/schema-registry";
+import { getLoiProfile, SCHEMA_VERSION } from "@/lib/profiles/schema-registry";
 
 export { SCHEMA_VERSION };
 export type {
@@ -67,13 +69,22 @@ async function extractLoiWithLlm(
     buildLoiExtractionPrompt(extractionText, dealType)
   );
   const result = parseLoiJson(parseJsonContent(content), hint);
-  return { result, model };
+  const validated = validateFieldsAgainstSource(
+    result.fields as Record<string, ParsedFieldValue>,
+    extractionText
+  );
+  return {
+    result: { ...result, fields: validated },
+    model,
+  };
 }
 
 export async function extractLoiMetadata(
   extractionText: string,
-  hint: ExtractionHint = {}
+  hint: ExtractionHint = {},
+  trace?: ExtractionTraceCollector
 ): Promise<ExtractionOutcome> {
+  const collector = trace ?? new ExtractionTraceCollector();
   const preference = getAiProviderPreference();
   const errors: string[] = [];
   const resolvedHint: ExtractionHint = {
@@ -81,27 +92,47 @@ export async function extractLoiMetadata(
     documentType: "LOI",
   };
 
+  const profile = getLoiProfile(resolvedHint.dealType ?? "LEASE");
+  const fieldsTotal = profile.fields.length;
+
   const tryLlm =
     preference === "ollama" ||
     preference === "openai" ||
+    preference === "claude" ||
     preference === "auto";
 
-  if (tryLlm && (preference !== "openai" || isOpenAiConfigured())) {
+  if (tryLlm && hasChatProviderAvailable()) {
     try {
       const { result, model } = await extractLoiWithLlm(
         extractionText,
         resolvedHint
       );
+      const filled = Object.values(result.fields).filter(
+        (f) => f.value !== null && String(f.value).trim() !== ""
+      ).length;
+      collector.recordLlmExtraction({
+        kind: "loi",
+        label: "LOI extraction",
+        text: extractionText,
+        model,
+        fieldsFilled: filled,
+        fieldsTotal,
+      });
       return {
         result,
         model,
         coverage: computeLoiCoverage(result.fields, result.dealType),
+        trace: collector.toTrace(),
       };
     } catch (error) {
       errors.push(
         error instanceof Error ? error.message : "LLM extraction failed"
       );
-      if (preference === "ollama" || preference === "openai") {
+      if (
+        preference === "ollama" ||
+        preference === "openai" ||
+        preference === "claude"
+      ) {
         throw new Error(errors.join("; "));
       }
     }
@@ -115,6 +146,18 @@ export async function extractLoiMetadata(
 
   const dealType = resolvedHint.dealType ?? "LEASE";
   const result = extractLoiHeuristic(extractionText, dealType);
+  const filled = Object.values(result.fields).filter(
+    (f) => f.value !== null && String(f.value).trim() !== ""
+  ).length;
+  collector.recordLlmExtraction({
+    kind: "loi",
+    label: "LOI extraction (heuristic fallback)",
+    text: extractionText,
+    model: "heuristic-v3",
+    fieldsFilled: filled,
+    fieldsTotal,
+    error: errors.join("; ") || undefined,
+  });
   return {
     result,
     model: "heuristic-v3",
@@ -123,5 +166,7 @@ export async function extractLoiMetadata(
       dealType,
       errors
     ),
+    trace: collector.toTrace(),
   };
 }
+

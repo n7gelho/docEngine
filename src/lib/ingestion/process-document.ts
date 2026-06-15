@@ -6,6 +6,7 @@ import { classifyDocumentForIngestion } from "@/lib/extraction/classify-document
 import { extractLoiMetadata } from "@/lib/extraction/extract-metadata";
 import { extractOlaMetadata } from "@/lib/extraction/extract-ola";
 import { buildExtractionText } from "@/lib/extraction/extraction-text";
+import { ExtractionTraceCollector } from "@/lib/extraction/extraction-trace";
 import { mapExtractionToDocumentFields } from "@/lib/extraction/map-extraction-fields";
 import { SCHEMA_VERSION } from "@/lib/profiles/schema-registry";
 import { embedText, embedTexts, embeddingToSql } from "@/lib/embeddings/embed";
@@ -38,34 +39,46 @@ export async function processDocument(documentId: string): Promise<void> {
     const buffer = await readStoredFile(doc.storageKey);
     const parsed = await parseDocument(buffer, doc.mimeType);
     const previewText = buildExtractionText(parsed);
-    const { dealType, documentType } = classifyDocumentForIngestion(
+    const trace = new ExtractionTraceCollector();
+
+    const { dealType, documentType } = await classifyDocumentForIngestion(
       parsed,
-      doc.filename
+      doc.filename,
+      trace
     );
 
     let result;
     let model: string;
     let coverage;
+    let extractionTrace;
 
     if (documentType === "OLA") {
-      const olaOutcome = await extractOlaMetadata(parsed, {
-        dealType,
-        documentType: "OLA",
-      });
+      const olaOutcome = await extractOlaMetadata(
+        parsed,
+        { dealType, documentType: "OLA" },
+        trace
+      );
       result = olaOutcome.result;
       model = olaOutcome.model;
       coverage = olaOutcome.coverage;
+      extractionTrace = olaOutcome.trace;
     } else {
-      const loiOutcome = await extractLoiMetadata(previewText, {
-        dealType,
-        documentType: "LOI",
-      });
+      const loiOutcome = await extractLoiMetadata(
+        previewText,
+        { dealType, documentType: "LOI" },
+        trace
+      );
       result = loiOutcome.result;
       model = loiOutcome.model;
       coverage = loiOutcome.coverage;
+      extractionTrace = loiOutcome.trace;
     }
 
-    const mapped = mapExtractionToDocumentFields(result, coverage);
+    const mapped = mapExtractionToDocumentFields(
+      result,
+      coverage,
+      extractionTrace
+    );
 
     const chunks = chunkDocument(parsed);
     const chunkTexts = chunks.map((c) => {

@@ -7,9 +7,10 @@ export type FilterState = {
   documentType: string;
   status: string;
   q: string;
-  loiCounterparty: string;
   loiLessor: string;
+  loiLessee: string;
   loiSeller: string;
+  loiBuyer: string;
   loiAircraft: string;
   loiMsn: string;
   loiTerm: string;
@@ -26,9 +27,10 @@ export const emptyFilters: FilterState = {
   documentType: "",
   status: "",
   q: "",
-  loiCounterparty: "",
   loiLessor: "",
+  loiLessee: "",
   loiSeller: "",
+  loiBuyer: "",
   loiAircraft: "",
   loiMsn: "",
   loiTerm: "",
@@ -189,9 +191,10 @@ export function MetadataFilters({
 
 function loiFieldToStateKey(fieldKey: string): string {
   const map: Record<string, string> = {
-    counterparty: "loiCounterparty",
     lessor: "loiLessor",
+    lessee: "loiLessee",
     seller: "loiSeller",
+    buyer: "loiBuyer",
     aircraft: "loiAircraft",
     msn: "loiMsn",
     term: "loiTerm",
@@ -219,9 +222,10 @@ export function filtersToQuery(filters: FilterState): string {
   if (!documentType && hasOla && !hasLoi) documentType = "OLA";
   if (documentType) params.set("documentType", documentType);
 
-  if (filters.loiCounterparty) params.set("counterparty", filters.loiCounterparty);
   if (filters.loiLessor) params.set("lessor", filters.loiLessor);
+  if (filters.loiLessee) params.set("lessee", filters.loiLessee);
   if (filters.loiSeller) params.set("seller", filters.loiSeller);
+  if (filters.loiBuyer) params.set("buyer", filters.loiBuyer);
   if (filters.loiAircraft) params.set("aircraftType", filters.loiAircraft);
   if (filters.loiMsn) params.set("msn", filters.loiMsn);
   if (filters.loiTerm) params.set("term", filters.loiTerm);

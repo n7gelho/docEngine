@@ -3,7 +3,9 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { ExtractionTracePanel } from "@/components/ExtractionTracePanel";
 import { ProfileMetadataGrid, flattenMetadataForTable } from "@/components/ProfileMetadataGrid";
+import { parseExtractionTrace } from "@/lib/extraction/extraction-trace";
 import {
   dealTypeBadgeClass,
   formatParties,
@@ -137,11 +139,25 @@ export default function DocumentDetailPage() {
     );
   }
 
+  const columnValues = {
+    governingLaw: document.governingLaw,
+    jurisdiction: document.jurisdiction,
+    term: document.term,
+    indicativeValue: document.indicativeValue,
+    lessor: document.lessor,
+    lessee: document.lessee,
+    seller: document.seller,
+    buyer: document.buyer,
+    aircraftType: document.aircraftType,
+    msn: document.msn,
+  };
   const metadataEntries = flattenMetadataForTable(
     document.metadata,
     document.dealType ?? null,
-    document.documentType ?? null
+    document.documentType ?? null,
+    columnValues
   );
+  const extractionTrace = parseExtractionTrace(document.metadata ?? null);
   const deal = document.deal;
   const linkedCounterpart =
     document.documentType === "LOI"
@@ -213,19 +229,7 @@ export default function DocumentDetailPage() {
             dealType={document.dealType}
             documentType={document.documentType}
             metadata={document.metadata}
-            columnValues={{
-              counterparty: document.counterparty,
-              governingLaw: document.governingLaw,
-              jurisdiction: document.jurisdiction,
-              term: document.term,
-              indicativeValue: document.indicativeValue,
-              lessor: document.lessor,
-              lessee: document.lessee,
-              seller: document.seller,
-              buyer: document.buyer,
-              aircraftType: document.aircraftType,
-              msn: document.msn,
-            }}
+            columnValues={columnValues}
           />
         </div>
 
@@ -241,6 +245,8 @@ export default function DocumentDetailPage() {
           </dl>
         </div>
       </div>
+
+      <ExtractionTracePanel trace={extractionTrace} />
 
       {metadataEntries.length > 0 && (
         <div className="card overflow-hidden p-0">

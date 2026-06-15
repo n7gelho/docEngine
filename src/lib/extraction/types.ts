@@ -5,6 +5,7 @@ import type {
   DocumentType,
 } from "@/lib/db/schema";
 import type { ExtractionCoverage } from "@/lib/extraction/extraction-coverage";
+import type { ExtractionTrace } from "@/lib/extraction/extraction-trace";
 import { fieldValueSchema } from "@/lib/extraction/normalize-extraction";
 
 export const loiExtractionSchema = z.object({
@@ -40,4 +41,5 @@ export type ExtractionOutcome = {
   result: ExtractionResult;
   model: string;
   coverage: ExtractionCoverage;
+  trace: ExtractionTrace;
 };

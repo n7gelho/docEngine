@@ -1,8 +1,10 @@
 import OpenAI from "openai";
 import {
-  getAiProviderPreference,
+  getEmbeddingFallbackToOllama,
+  getEmbeddingProviderPreference,
   getEmbeddingDimensions,
   isOpenAiConfigured,
+  type EmbeddingProviderPreference,
 } from "@/lib/ai/config";
 import { ollamaEmbedTexts } from "@/lib/ai/ollama";
 
@@ -58,29 +60,49 @@ async function embedWithOpenAI(texts: string[]): Promise<number[][]> {
     .map((item) => normalizeEmbeddingDimensions(item.embedding));
 }
 
+function buildEmbeddingChain(): EmbeddingProviderPreference[] {
+  const preference = getEmbeddingProviderPreference();
+  const fallbackToOllama = getEmbeddingFallbackToOllama();
+
+  if (preference === "ollama") {
+    return ["ollama"];
+  }
+
+  if (preference === "openai") {
+    const chain: EmbeddingProviderPreference[] = [];
+    if (isOpenAiConfigured()) chain.push("openai");
+    if (fallbackToOllama) chain.push("ollama");
+    return chain.length > 0 ? chain : ["ollama"];
+  }
+
+  // auto: local first, then cloud, then hash fallback in caller
+  const chain: EmbeddingProviderPreference[] = ["ollama"];
+  if (isOpenAiConfigured()) chain.push("openai");
+  return chain;
+}
+
 async function embedTextsWithProviders(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
 
-  const preference = getAiProviderPreference();
-  const tryOllama = preference === "ollama" || preference === "auto";
-  const tryOpenAi = preference === "openai" || preference === "auto";
+  const chain = buildEmbeddingChain();
+  const errors: string[] = [];
 
-  if (tryOllama) {
+  for (const provider of chain) {
     try {
-      return await embedWithOllama(texts);
-    } catch (error) {
-      if (preference === "ollama") throw error;
-    }
-  }
-
-  if (tryOpenAi && isOpenAiConfigured()) {
-    try {
+      if (provider === "ollama") {
+        return await embedWithOllama(texts);
+      }
       return await embedWithOpenAI(texts);
     } catch (error) {
-      if (preference === "openai") throw error;
+      errors.push(
+        `${provider}: ${error instanceof Error ? error.message : "request failed"}`
+      );
     }
   }
 
+  console.warn(
+    `[embed] All embedding providers failed (${errors.join("; ")}); using hash fallback`
+  );
   return texts.map(hashEmbed);
 }
 

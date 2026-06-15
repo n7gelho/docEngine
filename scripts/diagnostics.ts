@@ -55,7 +55,8 @@ async function runClassification(limit: number) {
     console.log(
       `  heuristic (header): ${classified.documentType} / ${classified.dealType}`
     );
-    console.log(`  pipeline would use: ${effectiveType}`);
+    console.log(`  pipeline would use (heuristic only): ${effectiveType}`);
+    console.log(`  note: live pipeline also runs LLM classification when AI is available`);
     console.log(`  header preview: ${header.slice(0, 200).replace(/\s+/g, " ")}`);
     console.log(
       `  extraction preview: ${extractionPreview.slice(0, 200).replace(/\s+/g, " ")}`

@@ -13,7 +13,6 @@ type ProfileMetadataGridProps = {
   documentType: string | null;
   metadata?: Record<string, MetadataField> | DocumentMetadataJson | null;
   columnValues?: {
-    counterparty?: string | null;
     governingLaw?: string | null;
     jurisdiction?: string | null;
     term?: string | null;
@@ -29,9 +28,8 @@ type ProfileMetadataGridProps = {
 
 const LOI_COLUMN_MAP: Record<string, keyof NonNullable<ProfileMetadataGridProps["columnValues"]>> = {
   lessor: "lessor",
-  seller: "seller",
-  counterparty: "counterparty",
   lessee: "lessee",
+  seller: "seller",
   buyer: "buyer",
   aircraft: "aircraftType",
   msn: "msn",
@@ -41,10 +39,75 @@ const LOI_COLUMN_MAP: Record<string, keyof NonNullable<ProfileMetadataGridProps[
   indicative_value: "indicativeValue",
 };
 
+/** OLA section entity keys promoted to top-level document columns. */
+const OLA_ENTITY_TOP_LEVEL: Record<string, keyof NonNullable<ProfileMetadataGridProps["columnValues"]>> = {
+  lessor_entity: "lessor",
+  lessee_entity: "lessee",
+  seller_entity: "seller",
+  buyer_entity: "buyer",
+};
+
+function resolveMetadataField(
+  metadata: Record<string, MetadataField> | null | undefined,
+  key: string,
+  dealType: string | null
+): MetadataField | undefined {
+  const direct = metadata?.[key];
+  if (direct?.value !== null && direct?.value !== undefined && String(direct.value).trim() !== "") {
+    return direct;
+  }
+
+  // Legacy: counterparty stored lessee/buyer under old schema
+  if (key === "lessee" && dealType === "LEASE") {
+    const legacy = metadata?.counterparty;
+    if (legacy?.value != null && String(legacy.value).trim() !== "") return legacy;
+  }
+  if (key === "buyer" && dealType === "PURCHASE") {
+    const legacy = metadata?.counterparty;
+    if (legacy?.value != null && String(legacy.value).trim() !== "") return legacy;
+  }
+
+  return direct;
+}
+
+function resolveOlaSectionField(
+  metadata: Record<string, MetadataField> | null | undefined,
+  sectionId: string,
+  fieldKey: string,
+  columnValues?: ProfileMetadataGridProps["columnValues"]
+): MetadataField | undefined {
+  const flatKey = `${sectionId}.${fieldKey}`;
+  const flat =
+    metadata?.[flatKey] ??
+    Object.entries(metadata ?? {}).find(([k]) => {
+      const p = parseOlaFlatFieldKey(k);
+      return p?.sectionId === sectionId && p.fieldKey === fieldKey;
+    })?.[1];
+
+  if (flat?.value !== null && flat?.value !== undefined && String(flat.value).trim() !== "") {
+    return flat;
+  }
+
+  const topLevelKey = OLA_ENTITY_TOP_LEVEL[fieldKey];
+  if (topLevelKey) {
+    const fromMeta = metadata?.[topLevelKey];
+    if (fromMeta?.value != null && String(fromMeta.value).trim() !== "") {
+      return fromMeta;
+    }
+    const fromColumn = columnValues?.[topLevelKey];
+    if (fromColumn != null && String(fromColumn).trim() !== "") {
+      return { value: fromColumn, confidence: 0.8 };
+    }
+  }
+
+  return flat;
+}
+
 function renderFieldValue(
   fieldKey: string,
   metadata: Record<string, MetadataField> | null | undefined,
   columnValues: ProfileMetadataGridProps["columnValues"],
+  dealType: string | null,
   indicativeDefault?: boolean
 ) {
   const colKey = LOI_COLUMN_MAP[fieldKey];
@@ -52,7 +115,7 @@ function renderFieldValue(
     colKey && columnValues?.[colKey] != null && columnValues[colKey] !== ""
       ? String(columnValues[colKey])
       : null;
-  const field = metadata?.[fieldKey];
+  const field = resolveMetadataField(metadata, fieldKey, dealType);
   const display =
     fromColumn ??
     (field?.value !== null && field?.value !== undefined
@@ -97,6 +160,7 @@ export function ProfileMetadataGrid({
                 fieldDef.key,
                 metadata ?? undefined,
                 columnValues,
+                dealType,
                 fieldDef.indicative
               )}
             </dd>
@@ -117,15 +181,12 @@ export function ProfileMetadataGrid({
           </h3>
           <dl className="grid gap-3 text-sm sm:grid-cols-2">
             {section.fields.map((fieldDef) => {
-              const flatKey = `${section.id}.${fieldDef.key}`;
-              const field =
-                metadata?.[flatKey] ??
-                Object.entries(metadata ?? {}).find(([k]) => {
-                  const p = parseOlaFlatFieldKey(k);
-                  return (
-                    p?.sectionId === section.id && p.fieldKey === fieldDef.key
-                  );
-                })?.[1];
+              const field = resolveOlaSectionField(
+                metadata ?? undefined,
+                section.id,
+                fieldDef.key,
+                columnValues
+              );
               const display =
                 field?.value !== null && field?.value !== undefined
                   ? String(field.value)
@@ -145,22 +206,37 @@ export function ProfileMetadataGrid({
   );
 }
 
+function fieldHasValue(field: MetadataField | undefined): boolean {
+  return (
+    field?.value !== null &&
+    field?.value !== undefined &&
+    String(field.value).trim() !== ""
+  );
+}
+
 export function flattenMetadataForTable(
   metadata: Record<string, MetadataField> | null | undefined,
   dealType: string | null,
-  documentType: string | null
+  documentType: string | null,
+  columnValues?: ProfileMetadataGridProps["columnValues"]
 ): Array<{ key: string; label: string; field: MetadataField }> {
   const profile = getProfile(dealType, documentType);
   if (!profile || !metadata) return [];
 
   const rows: Array<{ key: string; label: string; field: MetadataField }> = [];
+  const seen = new Set<string>();
+
+  function pushRow(key: string, label: string, field: MetadataField | undefined) {
+    if (!field || !fieldHasValue(field) || seen.has(key)) return;
+    seen.add(key);
+    rows.push({ key, label, field });
+  }
 
   if (profile.kind === "LOI") {
     for (const f of profile.fields) {
-      const field = metadata[f.key];
-      if (field && !f.key.startsWith("_")) {
-        rows.push({ key: f.key, label: f.label, field });
-      }
+      if (f.key.startsWith("_")) continue;
+      const field = resolveMetadataField(metadata, f.key, dealType);
+      pushRow(f.key, f.label, field);
     }
     return rows;
   }
@@ -168,14 +244,13 @@ export function flattenMetadataForTable(
   for (const section of profile.sections) {
     for (const f of section.fields) {
       const flatKey = `${section.id}.${f.key}`;
-      const field = metadata[flatKey];
-      if (field) {
-        rows.push({
-          key: flatKey,
-          label: `${section.label} — ${f.label}`,
-          field,
-        });
-      }
+      const field = resolveOlaSectionField(
+        metadata,
+        section.id,
+        f.key,
+        columnValues
+      );
+      pushRow(flatKey, `${section.label} — ${f.label}`, field);
     }
   }
 

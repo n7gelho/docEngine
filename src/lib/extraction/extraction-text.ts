@@ -8,8 +8,8 @@ import {
 } from "@/lib/extraction/select-extraction-pages";
 
 export function getExtractionMaxPages(): number {
-  const parsed = parseInt(process.env.EXTRACTION_MAX_PAGES ?? "3", 10);
-  return Number.isNaN(parsed) || parsed < 1 ? 3 : parsed;
+  const parsed = parseInt(process.env.EXTRACTION_MAX_PAGES ?? "5", 10);
+  return Number.isNaN(parsed) || parsed < 1 ? 5 : parsed;
 }
 
 export { getExtractionScanPages };

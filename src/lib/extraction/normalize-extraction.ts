@@ -270,5 +270,15 @@ export function parseFlatSectionFields(
     fields[aliased] = value;
   }
 
-  return normalizeFieldMap(fields);
+  const result = normalizeFieldMap(fields);
+
+  if (allowedKeys) {
+    for (const key of allowedKeys) {
+      if (!result[key]) {
+        result[key] = { value: null, confidence: 0.3 };
+      }
+    }
+  }
+
+  return result;
 }

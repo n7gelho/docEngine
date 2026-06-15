@@ -1,4 +1,5 @@
 import mammoth from "mammoth";
+import { estimatePdfPages } from "@/lib/parsing/estimate-pdf-pages";
 import { normalizeContractText } from "@/lib/parsing/normalize-contract-text";
 
 export type ParsedPage = {
@@ -33,6 +34,13 @@ export async function parsePdf(buffer: Buffer): Promise<ParsedDocument> {
         pages.push({ pageNumber: index + 1, text: text.trim() });
       }
     });
+  }
+
+  if (pages.length <= 1 && data.numpages && data.numpages > 1) {
+    const estimated = estimatePdfPages(fullText, data.numpages);
+    if (estimated.length > 1) {
+      return { fullText, pages: estimated };
+    }
   }
 
   if (pages.length === 0) {

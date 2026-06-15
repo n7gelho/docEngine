@@ -145,9 +145,7 @@ export function DocumentList({
                     <td className="px-6 py-4">
                       <div>{parties.primary}</div>
                       <div className="text-muted">
-                        {doc.documentType === "LOI"
-                          ? doc.counterparty ?? parties.secondary
-                          : parties.secondary}
+                        {parties.secondary}
                       </div>
                     </td>
                     <td className="px-6 py-4">

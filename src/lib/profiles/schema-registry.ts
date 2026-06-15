@@ -45,13 +45,13 @@ function loiFieldsForDealType(dealType: DealType): FieldDefinition[] {
   if (dealType === "LEASE") {
     return [
       { key: "lessor", label: "Lessor" },
-      { key: "counterparty", label: "Lessee" },
+      { key: "lessee", label: "Lessee" },
       ...LOI_CORE_FIELDS,
     ];
   }
   return [
     { key: "seller", label: "Seller" },
-    { key: "counterparty", label: "Buyer" },
+    { key: "buyer", label: "Buyer" },
     ...LOI_CORE_FIELDS,
   ];
 }
@@ -59,8 +59,9 @@ function loiFieldsForDealType(dealType: DealType): FieldDefinition[] {
 /** All LOI fields shown in filters (lease + purchase party fields). */
 export const LOI_FILTER_FIELDS: FieldDefinition[] = [
   { key: "lessor", label: "Lessor" },
+  { key: "lessee", label: "Lessee" },
   { key: "seller", label: "Seller" },
-  { key: "counterparty", label: "Counterparty" },
+  { key: "buyer", label: "Buyer" },
   ...LOI_CORE_FIELDS,
 ];
 
@@ -80,12 +81,7 @@ function olaSectionsForDealType(dealType: DealType): OlaSectionDefinition[] {
     {
       id: "parties_and_recitals",
       label: "Parties and Recitals",
-      fields: [
-        { key: "counterparty", label: "Counterparty" },
-        ...primaryParty,
-        { key: "aircraft", label: "Aircraft" },
-        { key: "msn", label: "MSN" },
-      ],
+      fields: [...primaryParty, { key: "aircraft", label: "Aircraft" }, { key: "msn", label: "MSN" }],
     },
     {
       id: "definitions_and_interpretation",

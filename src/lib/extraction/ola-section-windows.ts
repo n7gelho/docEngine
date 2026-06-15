@@ -4,7 +4,18 @@ import {
   getExtractionMaxPages,
   getExtractionScanPages,
 } from "@/lib/extraction/extraction-text";
+import type {
+  ExtractionTraceCollector,
+  LocationSource,
+} from "@/lib/extraction/extraction-trace";
 import { selectExtractionPages } from "@/lib/extraction/select-extraction-pages";
+import {
+  buildTocSectionBoundaries,
+  detectTocRegion,
+  mapTocEntriesToSections,
+  parseTableOfContents,
+  type TocMappedSection,
+} from "@/lib/extraction/toc-parser";
 
 export type OlaSectionAnchor = {
   sectionId: string;
@@ -12,12 +23,17 @@ export type OlaSectionAnchor = {
   endIndex: number;
   text: string;
   located: boolean;
+  locationSource: LocationSource;
+  tocLabel?: string;
 };
 
 export type OlaSectionText = {
   sectionId: string;
   text: string;
   located: boolean;
+  locationSource: LocationSource;
+  startIndex?: number;
+  tocLabel?: string;
 };
 
 /** Operative-clause headings — tried before generic patterns. */
@@ -185,14 +201,15 @@ const KEYWORD_FALLBACKS: Record<string, RegExp[]> = {
   ],
 };
 
-const DEFAULT_WINDOW_CHARS = 5000;
+const DEFAULT_WINDOW_CHARS = 8000;
 const LARGE_SECTION_WINDOW: Record<string, number> = {
-  maintenance_reserves: 8000,
-  insurance: 7000,
-  redelivery_conditions: 8000,
-  definitions_and_interpretation: 6000,
-  cape_town_convention: 6000,
-  governing_law_and_jurisdiction: 3500,
+  parties_and_recitals: 10_000,
+  maintenance_reserves: 14_000,
+  insurance: 12_000,
+  redelivery_conditions: 14_000,
+  definitions_and_interpretation: 10_000,
+  cape_town_convention: 10_000,
+  governing_law_and_jurisdiction: 6000,
 };
 
 function windowSizeForSection(sectionId: string): number {
@@ -253,6 +270,9 @@ function scoreMatch(
 }
 
 function detectTocEndIndex(fullText: string): number {
+  const region = detectTocRegion(fullText);
+  if (region) return region.tocEnd;
+
   const toc = /TABLE OF CONTENTS/i.exec(fullText);
   if (!toc) return 0;
 
@@ -364,7 +384,7 @@ function findSectionStart(
   return null;
 }
 
-export function findSectionAnchors(fullText: string): OlaSectionAnchor[] {
+function findRegexSectionAnchors(fullText: string): OlaSectionAnchor[] {
   const tocEnd = detectTocEndIndex(fullText);
   const anchors: OlaSectionAnchor[] = [];
 
@@ -381,27 +401,127 @@ export function findSectionAnchors(fullText: string): OlaSectionAnchor[] {
       endIndex: index + text.length,
       text,
       located: true,
+      locationSource: "regex",
     });
   }
 
   return anchors.sort((a, b) => a.startIndex - b.startIndex);
 }
 
+function findTocSectionAnchors(
+  fullText: string,
+  pages?: ParsedDocument["pages"]
+): OlaSectionAnchor[] {
+  const toc = parseTableOfContents(fullText);
+  if (!toc.found) return [];
+
+  const mapped = mapTocEntriesToSections(toc.entries);
+  const bodyStart = toc.tocEnd;
+  const boundaries = buildTocSectionBoundaries(
+    fullText,
+    mapped,
+    bodyStart,
+    pages
+  );
+
+  return boundaries.map((boundary) => {
+    const text = fullText.slice(boundary.startIndex, boundary.endIndex).trim();
+    return {
+      sectionId: boundary.sectionId,
+      startIndex: boundary.startIndex,
+      endIndex: boundary.endIndex,
+      text,
+      located: text.length > 0,
+      locationSource: "toc" as const,
+      tocLabel: boundary.tocLabel,
+    };
+  });
+}
+
+function mergeSectionAnchors(
+  tocAnchors: OlaSectionAnchor[],
+  regexAnchors: OlaSectionAnchor[]
+): OlaSectionAnchor[] {
+  const byId = new Map<string, OlaSectionAnchor>();
+
+  for (const anchor of regexAnchors) {
+    byId.set(anchor.sectionId, anchor);
+  }
+  for (const anchor of tocAnchors) {
+    byId.set(anchor.sectionId, anchor);
+  }
+
+  return [...byId.values()].sort((a, b) => a.startIndex - b.startIndex);
+}
+
+/** Regex-based section anchors (legacy / fallback path). */
+export function findSectionAnchors(fullText: string): OlaSectionAnchor[] {
+  return findRegexSectionAnchors(fullText);
+}
+
+export function expandSectionText(
+  fullText: string,
+  section: OlaSectionText,
+  expandFactor = 2
+): string {
+  if (!section.located || section.startIndex === undefined) return section.text;
+
+  const baseSize = Math.max(section.text.length, 2000);
+  const expandedSize = Math.min(
+    Math.floor(baseSize * expandFactor),
+    20_000
+  );
+  const start = Math.max(0, section.startIndex - 200);
+  const end = Math.min(fullText.length, start + expandedSize);
+  return fullText.slice(start, end).trim();
+}
+
+export function getTocMappedSections(fullText: string): TocMappedSection[] {
+  const toc = parseTableOfContents(fullText);
+  if (!toc.found) return [];
+  return mapTocEntriesToSections(toc.entries);
+}
+
 export function getOlaSectionTexts(
-  parsed: ParsedDocument
+  parsed: ParsedDocument,
+  trace?: ExtractionTraceCollector
 ): OlaSectionText[] {
   const fullText = parsed.fullText;
+  const tocParse = parseTableOfContents(fullText);
+  const mapped = mapTocEntriesToSections(tocParse.entries);
+
+  trace?.recordTocParse({
+    text: tocParse.rawBlock || fullText.slice(0, 4000),
+    entryCount: tocParse.entries.length,
+    mappedSectionCount: mapped.length,
+    found: tocParse.found,
+  });
+
+  const tocAnchors = findTocSectionAnchors(fullText, parsed.pages);
+  const regexAnchors = findRegexSectionAnchors(fullText);
+  const merged = mergeSectionAnchors(tocAnchors, regexAnchors);
+
   const knownIds = getOlaSectionIds();
-  const byAnchor = new Map(
-    findSectionAnchors(fullText).map((a) => [a.sectionId, a])
-  );
+  const byAnchor = new Map(merged.map((a) => [a.sectionId, a]));
 
   return knownIds.map((sectionId) => {
     const anchor = byAnchor.get(sectionId);
     if (anchor?.text) {
-      return { sectionId, text: anchor.text, located: true };
+      return {
+        sectionId,
+        text: anchor.text,
+        located: true,
+        locationSource: anchor.locationSource,
+        startIndex: anchor.startIndex,
+        tocLabel: anchor.tocLabel,
+      };
     }
-    return { sectionId, text: "", located: false };
+    return {
+      sectionId,
+      text: "",
+      located: false,
+      locationSource: "none",
+    };
   });
 }
 

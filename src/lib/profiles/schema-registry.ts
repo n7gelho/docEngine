@@ -36,9 +36,8 @@ const LOI_CORE_FIELDS: FieldDefinition[] = [
   { key: "aircraft", label: "Aircraft" },
   { key: "msn", label: "MSN" },
   { key: "term", label: "Term", indicative: true },
-  { key: "jurisdiction", label: "Jurisdiction" },
   { key: "governing_law", label: "Governing Law" },
-  { key: "indicative_value", label: "Indicative Value", indicative: true },
+  { key: "jurisdiction", label: "Jurisdiction" },
 ];
 
 function loiFieldsForDealType(dealType: DealType): FieldDefinition[] {

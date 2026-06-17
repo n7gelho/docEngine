@@ -1,3 +1,4 @@
+import { softCopyLoiGoverningLawJurisdiction } from "@/lib/extraction/align-loi-governing-law";
 import { hasChatProviderAvailable } from "@/lib/ai/config";
 import type { DealType, DocumentType } from "@/lib/db/schema";
 import { ExtractionTraceCollector } from "@/lib/extraction/extraction-trace";
@@ -5,7 +6,7 @@ import {
   computeLoiCoverage,
   type ExtractionCoverage,
 } from "@/lib/extraction/extraction-coverage";
-import { extractLoiHeuristic } from "@/lib/extraction/loi-heuristic";
+import { extractLoiHeuristic, fillMissingLoiAircraftField } from "@/lib/extraction/loi-heuristic";
 import { parseJsonContent } from "@/lib/extraction/llm-json";
 import { callLlmInContext } from "@/lib/extraction/pipeline/llm-call";
 import {
@@ -79,7 +80,10 @@ async function extractLoiWithLlm(
     result.fields as Record<string, ParsedFieldValue>,
     extractionText
   );
+  fillMissingLoiAircraftField(validated, extractionText);
+  delete validated.indicative_value;
   trackModel(ctx.model, model);
+  softCopyLoiGoverningLawJurisdiction(validated);
   return {
     result: { ...result, fields: validated },
     model,
@@ -152,6 +156,14 @@ export async function extractLoiMetadata(
   );
 
   const result = extractLoiHeuristic(extractionText, dealType);
+  fillMissingLoiAircraftField(
+    result.fields as Record<string, ParsedFieldValue>,
+    extractionText
+  );
+  delete (result.fields as Record<string, ParsedFieldValue>).indicative_value;
+  softCopyLoiGoverningLawJurisdiction(
+    result.fields as Record<string, ParsedFieldValue>
+  );
   const model = adoptHeuristicModel(ctx.model);
   const filled = Object.values(result.fields).filter(
     (f) => f.value !== null && String(f.value).trim() !== ""

@@ -1,5 +1,45 @@
 import type { DealType, DocumentMetadataJson } from "@/lib/db/schema";
+import type { ParsedFieldValue } from "@/lib/extraction/normalize-extraction";
 import type { LoiExtractionResult } from "@/lib/extraction/types";
+
+/** Infer aircraft type/model from common LOI phrasing and delivery tables. */
+export function inferLoiAircraftType(text: string): string | null {
+  const narrative = text.match(
+    /\b((?:Airbus|Boeing)\s+)?([AB]\d{3}\s*[-]?\s*\d{0,3}\w*)\s+aircraft\b/i
+  );
+  if (narrative?.[2]) {
+    return narrative[2].replace(/\s+/g, "").replace(/-/g, "");
+  }
+
+  const tableRow = text.match(/\n([AB]\d{3}\d{2,3}\w*)(?:GE|RR|CFM|PW)/i);
+  if (tableRow?.[1]) {
+    return tableRow[1].trim();
+  }
+
+  const labelled = text.match(
+    /(?:Aircraft(?:\s+Model)?|Airframe)[:\s]+((?:Airbus|Boeing\s+)?[AB]?\d{3}[^\n,]{0,40})/i
+  );
+  if (labelled?.[1]) {
+    return labelled[1].trim().split(/\s+/).slice(0, 2).join(" ");
+  }
+
+  return null;
+}
+
+export function fillMissingLoiAircraftField(
+  fields: Record<string, ParsedFieldValue>,
+  sourceText: string
+): void {
+  const current = fields.aircraft?.value;
+  if (current !== null && current !== undefined && String(current).trim() !== "") {
+    return;
+  }
+
+  const inferred = inferLoiAircraftType(sourceText);
+  if (!inferred) return;
+
+  fields.aircraft = { value: inferred, confidence: 0.65 };
+}
 
 export function extractLoiHeuristic(
   text: string,
@@ -51,17 +91,35 @@ export function extractLoiHeuristic(
   if (msn?.[1]) fields.msn = { value: msn[1], confidence: 0.65 };
 
   const aircraft = text.match(
-    /(?:Aircraft|Aircraft Model)[:\s]*((?:Airbus|Boeing|A\d{3}|B\d{3})[^\n,]{0,50})/i
+    /(?:Aircraft(?:\s+Model)?|Airframe)[:\s]+((?:Airbus|Boeing\s+)?[AB]?\d{3}[^\n,]{0,50})/i
   );
   if (aircraft?.[1]) {
     fields.aircraft = { value: aircraft[1].trim(), confidence: 0.6 };
+  } else {
+    const inferred = inferLoiAircraftType(text);
+    if (inferred) {
+      fields.aircraft = { value: inferred, confidence: 0.6 };
+    }
   }
 
   const jurisdiction = text.match(
-    /(?:Cape Town Convention|NY Law|New York Law|UK Law|English Law)/i
+    /(?:courts? of|jurisdiction of|exclusive jurisdiction|non-exclusive jurisdiction)\s+([^\n.]{3,80})/i
   );
-  if (jurisdiction?.[0]) {
-    fields.jurisdiction = { value: jurisdiction[0], confidence: 0.55 };
+  if (jurisdiction?.[1]) {
+    fields.jurisdiction = {
+      value: jurisdiction[1].trim(),
+      confidence: 0.55,
+    };
+  } else {
+    const jurisdictionAlt = text.match(
+      /(?:Cape Town Convention|NY Law|New York Law|UK Law|English Law)/i
+    );
+    if (jurisdictionAlt?.[0]) {
+      fields.jurisdiction = {
+        value: jurisdictionAlt[0],
+        confidence: 0.5,
+      };
+    }
   }
 
   const gov = text.match(
@@ -76,14 +134,71 @@ export function extractLoiHeuristic(
     fields.term = { value: term[1].trim(), confidence: 0.55, indicative: true };
   }
 
-  const value = text.match(
-    /(?:Indicative (?:Value|Price|Rent)|Purchase Price)[:\s]*((?:USD|EUR|GBP)?\s*[\d,]+(?:\.\d+)?[^\n]{0,20})/i
+  const aircraftCount = text.match(
+    /(?:number of aircraft|aircraft count|(?:\b)(\d+)\s*\(\d+\)\s*aircraft)/i
   );
-  if (value?.[1]) {
-    fields.indicative_value = {
-      value: value[1].trim(),
+  if (aircraftCount?.[1]) {
+    fields.aircraft_count = {
+      value: parseInt(aircraftCount[1], 10),
       confidence: 0.55,
-      indicative: true,
+    };
+  }
+
+  const transactionType = text.match(
+    /\b(dry lease|wet lease|operating lease|finance lease)\b/i
+  );
+  if (transactionType?.[1]) {
+    fields.transaction_type = {
+      value: transactionType[1].toLowerCase(),
+      confidence: 0.6,
+    };
+  }
+
+  const monthlyRent = text.match(
+    /(?:Monthly Rent|Basic Rent|Rent)[:\s]*((?:USD|EUR|GBP)?\s*[\d,]+(?:\.\d+)?[^\n]{0,20})/i
+  );
+  if (monthlyRent?.[1]) {
+    fields.monthly_rent = {
+      value: monthlyRent[1].trim(),
+      confidence: 0.55,
+    };
+  }
+
+  const securityDeposit = text.match(
+    /(?:Security Deposit)[:\s]*([^\n]{4,80})/i
+  );
+  if (securityDeposit?.[1]) {
+    fields.security_deposit = {
+      value: securityDeposit[1].trim(),
+      confidence: 0.55,
+    };
+  }
+
+  const maintenanceReserve = text.match(
+    /(?:Maintenance Reserve)[:\s]*([^\n]{4,120})/i
+  );
+  if (maintenanceReserve?.[1]) {
+    fields.maintenance_reserve = {
+      value: maintenanceReserve[1].trim(),
+      confidence: 0.5,
+    };
+  }
+
+  const insurance = text.match(/(?:Insurance)[:\s]*([^\n]{4,120})/i);
+  if (insurance?.[1]) {
+    fields.insurance = {
+      value: insurance[1].trim(),
+      confidence: 0.5,
+    };
+  }
+
+  const delivery = text.match(
+    /(?:Expected Delivery|Target Delivery(?: Date)?|Delivery Date)[:\s]*([^\n]{4,60})/i
+  );
+  if (delivery?.[1]) {
+    fields.expected_delivery = {
+      value: delivery[1].trim(),
+      confidence: 0.55,
     };
   }
 

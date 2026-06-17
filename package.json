@@ -13,6 +13,7 @@
     "db:studio": "drizzle-kit studio",
     "reprocess:all": "tsx scripts/reprocess.ts all",
     "reprocess:ola": "tsx scripts/reprocess.ts ola --verbose",
+    "backfill:deal-parameters": "tsx scripts/backfill-deal-parameters.ts",
     "diagnostics": "tsx scripts/diagnostics.ts"
   },
   "dependencies": {

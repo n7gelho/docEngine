@@ -29,6 +29,15 @@ export { extractOlaMetadata } from "@/lib/extraction/extract-ola";
 export { buildExtractionText, describeExtractionSelection } from "@/lib/extraction/extraction-text";
 export { mapExtractionToDocumentFields } from "@/lib/extraction/map-extraction-fields";
 export {
+  buildDealParameters,
+  parseDealParameters,
+  parseDealParametersCoverage,
+  formatDealParametersLine,
+  DEAL_PARAMETER_KEYS,
+  type DealParameterKey,
+  type DealParametersCoverage,
+} from "@/lib/extraction/deal-parameters";
+export {
   getOlaSectionTexts,
   getTocMappedSections,
   findSectionAnchors,

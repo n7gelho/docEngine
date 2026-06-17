@@ -47,12 +47,21 @@ dealType must be "LEASE". documentType must be "LOI".
 
 Extract these fields from the document text only. Use null when not clearly stated — do not guess.
 - lessor: the lessor entity name
-- lessee: the lessee entity name
-- aircraft, msn, term, jurisdiction, governing_law, indicative_value
+- lessee: the lessee entity name (counterparty)
+- aircraft, msn, term (lease term), governing_law, jurisdiction
+- governing_law: legal system governing the contract (e.g. "laws of England and Wales")
+- jurisdiction: courts or forum with jurisdiction (e.g. "courts of New York"); use null if not separately stated
+- aircraft_count: number of aircraft (integer if stated)
+- transaction_type: e.g. dry lease, wet lease, operating lease
+- monthly_rent: monthly rent amount with currency if stated
+- security_deposit: security deposit amount or terms
+- maintenance_reserve: brief maintenance reserve summary if stated
+- insurance: brief insurance summary if stated
+- expected_delivery: expected or target delivery date/period
 
 IMPORTANT: Return ALL field keys below. Use null for missing values.
 
-Return flat JSON — string or null values only:
+Return flat JSON — string, number, or null values only:
 {
   "dealType": "LEASE",
   "documentType": "LOI",
@@ -62,9 +71,15 @@ Return flat JSON — string or null values only:
     "aircraft": null,
     "msn": null,
     "term": null,
-    "jurisdiction": null,
     "governing_law": null,
-    "indicative_value": null
+    "jurisdiction": null,
+    "aircraft_count": null,
+    "transaction_type": null,
+    "monthly_rent": null,
+    "security_deposit": null,
+    "maintenance_reserve": null,
+    "insurance": null,
+    "expected_delivery": null
   }
 }
 
@@ -79,7 +94,9 @@ dealType must be "PURCHASE". documentType must be "LOI".
 Extract these fields from the document text only. Use null when not clearly stated — do not guess.
 - seller: the seller entity name
 - buyer: the buyer entity name
-- aircraft, msn, term, jurisdiction, governing_law, indicative_value
+- aircraft, msn, term, governing_law, jurisdiction
+- governing_law: legal system governing the contract (e.g. "laws of England and Wales")
+- jurisdiction: courts or forum with jurisdiction (e.g. "courts of New York"); use null if not separately stated
 
 IMPORTANT: Return ALL field keys below. Use null for missing values.
 
@@ -94,8 +111,7 @@ Return flat JSON — string or null values only:
     "msn": null,
     "term": null,
     "jurisdiction": null,
-    "governing_law": null,
-    "indicative_value": null
+    "governing_law": null
   }
 }
 
@@ -112,6 +128,26 @@ export function buildOlaTier1Prompt(
       ? "lessor_entity, lessee_entity"
       : "seller_entity, buyer_entity";
 
+  const leaseCommercialFields =
+    dealType === "LEASE"
+      ? `
+- aircraft_count: number of aircraft (integer if stated)
+- transaction_type: e.g. dry lease, wet lease, operating lease
+- monthly_rent: monthly rent with currency if stated
+- security_deposit: security deposit amount or terms
+- expected_delivery: expected or target delivery date/period`
+      : "";
+
+  const leaseCommercialJson =
+    dealType === "LEASE"
+      ? `,
+    "aircraft_count": null,
+    "transaction_type": null,
+    "monthly_rent": null,
+    "security_deposit": null,
+    "expected_delivery": null`
+      : "";
+
   return `You are an expert in aircraft lease/purchase agreement header sections.
 
 dealType must be "${dealType}".
@@ -120,7 +156,7 @@ From the text below extract header-level fields only. Use null when not clearly 
 - ${partyFields}
 - aircraft, msn
 - governing_law, jurisdiction
-- lease_term or term if stated
+- lease_term or term if stated${leaseCommercialFields}
 
 IMPORTANT: Return ALL field keys in "fields". Use null for missing values.
 
@@ -136,7 +172,7 @@ Return flat JSON:
     "msn": null,
     "governing_law": null,
     "jurisdiction": null,
-    "lease_term": null
+    "lease_term": null${leaseCommercialJson}
   }
 }
 

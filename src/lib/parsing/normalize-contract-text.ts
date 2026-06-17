@@ -3,7 +3,8 @@
  * Insert spacing and normalize common lease/LOI patterns before extraction.
  */
 export function normalizeContractText(text: string): string {
-  let normalized = text.replace(/\r\n/g, "\n");
+  // PostgreSQL TEXT cannot store NUL (0x00); common in PDF extraction.
+  let normalized = text.replace(/\u0000/g, "").replace(/\r\n/g, "\n");
 
   const labelFixes: [RegExp, string][] = [
     [/Lessor(?=[A-Z])/g, "Lessor "],

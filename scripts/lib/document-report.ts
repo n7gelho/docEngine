@@ -1,4 +1,9 @@
 import type { DocumentMetadataJson } from "@/lib/db/schema";
+import {
+  DEAL_PARAMETER_KEYS,
+  parseDealParameters,
+  parseDealParametersCoverage,
+} from "@/lib/extraction/deal-parameters";
 
 export type ParsedCoverage = {
   tier1Filled?: number;
@@ -28,6 +33,29 @@ export function formatCoverageLine(coverage: ParsedCoverage): string {
     line += `, sections ${coverage.sectionsLocated}/${coverage.sectionsTotal ?? "?"}`;
   }
   return line;
+}
+
+export function formatDealParametersLine(
+  metadata: DocumentMetadataJson | null | undefined
+): string {
+  const coverage = parseDealParametersCoverage(metadata);
+  if (!coverage) return "deal parameters: —";
+  return `deal parameters: ${coverage.filled}/${coverage.total}`;
+}
+
+export function listDealParameterValues(
+  metadata: DocumentMetadataJson | null | undefined
+): Array<{ key: string; value: string }> {
+  const parameters = parseDealParameters(metadata);
+  if (!parameters) return [];
+  return DEAL_PARAMETER_KEYS.map((key) => ({
+    key,
+    value:
+      parameters[key]?.value === null ||
+      parameters[key]?.value === undefined
+        ? "—"
+        : String(parameters[key].value),
+  }));
 }
 
 export function listFilledMetadataKeys(

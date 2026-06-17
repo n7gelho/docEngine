@@ -90,6 +90,8 @@ export const documents = pgTable(
     monthlyRent: doublePrecision("monthly_rent"),
     currency: text("currency"),
     governingLaw: text("governing_law"),
+    securityDeposit: text("security_deposit"),
+    expectedDelivery: text("expected_delivery"),
 
     metadata: jsonb("metadata").$type<DocumentMetadataJson>().default({}),
     fullText: text("full_text"),

@@ -12,7 +12,7 @@ export type ReprocessTarget = {
 };
 
 export async function loadReprocessTargets(
-  filter: "all" | "ola" | string
+  filter: "all" | "ola" | "loi" | string
 ): Promise<ReprocessTarget[]> {
   const { eq } = await import("drizzle-orm");
   const { db } = await import("../src/lib/db");
@@ -45,7 +45,9 @@ export async function loadReprocessTargets(
   const rows =
     filter === "ola"
       ? await query.where(eq(documents.documentType, "OLA"))
-      : await query;
+      : filter === "loi"
+        ? await query.where(eq(documents.documentType, "LOI"))
+        : await query;
 
   return rows;
 }
@@ -64,6 +66,7 @@ async function printSummary(id: string, verbose: boolean): Promise<void> {
       aircraftType: documents.aircraftType,
       msn: documents.msn,
       governingLaw: documents.governingLaw,
+      jurisdiction: documents.jurisdiction,
       metadata: documents.metadata,
     })
     .from(documents)
@@ -78,6 +81,7 @@ async function printSummary(id: string, verbose: boolean): Promise<void> {
   console.log(`  aircraft: ${updated.aircraftType ?? "—"}`);
   console.log(`  msn: ${updated.msn ?? "—"}`);
   console.log(`  governing law: ${updated.governingLaw ?? "—"}`);
+  console.log(`  jurisdiction: ${updated.jurisdiction ?? "—"}`);
 
   const coverage = parseCoverage(updated.metadata);
   if (coverage) {
@@ -100,7 +104,7 @@ async function printSummary(id: string, verbose: boolean): Promise<void> {
 }
 
 export async function runReprocess(
-  filter: "all" | "ola" | string,
+  filter: "all" | "ola" | "loi" | string,
   verbose = false
 ): Promise<void> {
   loadEnvLocal();

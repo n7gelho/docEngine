@@ -5,7 +5,7 @@ import { chunkDocument } from "@/lib/chunking/chunk-document";
 import { classifyDocumentForIngestion } from "@/lib/extraction/classify-document";
 import { extractLoiMetadata } from "@/lib/extraction/extract-metadata";
 import { extractOlaMetadata } from "@/lib/extraction/extract-ola";
-import { buildExtractionText } from "@/lib/extraction/extraction-text";
+import { buildLoiExtractionText } from "@/lib/extraction/extraction-text";
 import { ExtractionTraceCollector } from "@/lib/extraction/extraction-trace";
 import { createExtractionContext } from "@/lib/extraction/pipeline/context";
 import { mapExtractionToDocumentFields } from "@/lib/extraction/map-extraction-fields";
@@ -39,7 +39,6 @@ export async function processDocument(documentId: string): Promise<void> {
 
     const buffer = await readStoredFile(doc.storageKey);
     const parsed = await parseDocument(buffer, doc.mimeType);
-    const previewText = buildExtractionText(parsed);
     const trace = new ExtractionTraceCollector();
     const pipelineCtx = createExtractionContext();
 
@@ -67,8 +66,9 @@ export async function processDocument(documentId: string): Promise<void> {
       coverage = olaOutcome.coverage;
       extractionTrace = olaOutcome.trace;
     } else {
+      const loiText = buildLoiExtractionText(parsed);
       const loiOutcome = await extractLoiMetadata(
-        previewText,
+        loiText,
         { dealType, documentType: "LOI" },
         pipelineCtx,
         trace,
@@ -137,6 +137,8 @@ export async function processDocument(documentId: string): Promise<void> {
         monthlyRent: mapped.monthlyRent,
         currency: mapped.currency,
         governingLaw: mapped.governingLaw,
+        securityDeposit: mapped.securityDeposit,
+        expectedDelivery: mapped.expectedDelivery,
         metadata: mapped.metadata,
         extractionModel: model,
         schemaVersion: SCHEMA_VERSION,

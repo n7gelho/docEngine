@@ -26,6 +26,13 @@ export const FIELD_KEY_ALIASES: Record<string, string> = {
   aircraft_type: "aircraft",
   aircraft_model: "aircraft",
   lease_term: "term",
+  lease_type: "transaction_type",
+  number_of_aircraft: "aircraft_count",
+  aircraft_quantity: "aircraft_count",
+  delivery_date: "expected_delivery",
+  target_delivery: "expected_delivery",
+  target_delivery_date: "expected_delivery",
+  security_deposit_amount: "security_deposit",
 };
 
 export function aliasFieldKey(key: string): string {

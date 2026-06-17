@@ -42,6 +42,8 @@ export async function initializeApp() {
         monthly_rent DOUBLE PRECISION,
         currency TEXT,
         governing_law TEXT,
+        security_deposit TEXT,
+        expected_delivery TEXT,
         metadata JSONB DEFAULT '{}',
         full_text TEXT,
         document_embedding vector(${dimensions}),
@@ -108,6 +110,8 @@ export async function initializeApp() {
     await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS jurisdiction TEXT`;
     await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS term TEXT`;
     await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS indicative_value TEXT`;
+    await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS security_deposit TEXT`;
+    await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS expected_delivery TEXT`;
     await sql`ALTER TABLE deals ADD COLUMN IF NOT EXISTS deal_type TEXT`;
     await sql`ALTER TABLE deals ADD COLUMN IF NOT EXISTS seller TEXT`;
     await sql`ALTER TABLE deals ADD COLUMN IF NOT EXISTS buyer TEXT`;

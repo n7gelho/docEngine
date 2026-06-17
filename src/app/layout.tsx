@@ -44,6 +44,9 @@ export default function RootLayout({
               <Link href="/search" className="text-slate-600 hover:text-primary">
                 Semantic Search
               </Link>
+              <Link href="/precedents" className="text-slate-600 hover:text-primary">
+                Precedent Finder
+              </Link>
             </nav>
           </div>
         </header>

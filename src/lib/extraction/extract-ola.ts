@@ -110,6 +110,20 @@ function tier1ToSections(
   if (tier1Fields.governing_law) gov.governing_law = tier1Fields.governing_law;
   if (tier1Fields.jurisdiction) gov.jurisdiction = tier1Fields.jurisdiction;
   if (tier1Fields.lease_term) definitions.lease_term = tier1Fields.lease_term;
+  if (!definitions.lease_term && tier1Fields.term) {
+    definitions.lease_term = tier1Fields.term;
+  }
+
+  const commercialKeys = [
+    "aircraft_count",
+    "transaction_type",
+    "monthly_rent",
+    "security_deposit",
+    "expected_delivery",
+  ] as const;
+  for (const key of commercialKeys) {
+    if (tier1Fields[key]) definitions[key] = tier1Fields[key];
+  }
 
   return {
     parties_and_recitals: parties,

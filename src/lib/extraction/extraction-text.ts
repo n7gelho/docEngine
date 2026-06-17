@@ -1,4 +1,5 @@
 import type { ParsedDocument } from "@/lib/parsing/parse-document";
+import { appendLoiGoverningLawSection } from "@/lib/extraction/loi-governing-law-section";
 import {
   getExtractionScanPages,
   scorePages,
@@ -30,6 +31,12 @@ export function buildExtractionText(parsed: ParsedDocument): string {
   }
 
   return selectExtractionTextFromSections(parsed.fullText, maxPages);
+}
+
+/** LOI extraction text: scored preview plus mandatory governing-law section splice. */
+export function buildLoiExtractionText(parsed: ParsedDocument): string {
+  const base = buildExtractionText(parsed);
+  return appendLoiGoverningLawSection(base, parsed.fullText);
 }
 
 export type ExtractionTextDebugInfo = {

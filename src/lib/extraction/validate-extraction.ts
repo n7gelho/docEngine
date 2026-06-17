@@ -30,6 +30,31 @@ export function valueAppearsInSource(value: string, sourceText: string): boolean
   return false;
 }
 
+function compactAlnum(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function aircraftValueAppearsInSource(value: string, sourceText: string): boolean {
+  if (valueAppearsInSource(value, sourceText)) return true;
+
+  const compactValue = compactAlnum(value);
+  const compactSource = compactAlnum(sourceText);
+  if (compactValue.length >= 5 && compactSource.includes(compactValue)) {
+    return true;
+  }
+
+  const family = value.match(/\b([AB]\d{3})\b/i)?.[1];
+  if (family) {
+    const familyLower = family.toLowerCase();
+    const tail = compactValue.slice(familyLower.length);
+    if (tail.length >= 2 && compactSource.includes(familyLower + tail)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /**
  * Drop field values that cannot be found in the source section text (hallucination guard).
  */
@@ -47,7 +72,11 @@ export function validateFieldsAgainstSource(
     }
 
     const str = String(value).trim();
-    if (valueAppearsInSource(str, sourceText)) {
+    const appearsInSource =
+      key === "aircraft"
+        ? aircraftValueAppearsInSource(str, sourceText)
+        : valueAppearsInSource(str, sourceText);
+    if (appearsInSource) {
       out[key] = field;
     } else {
       out[key] = { ...field, value: null, confidence: 0.2 };

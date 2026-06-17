@@ -1,6 +1,8 @@
 import { loadEnvLocal } from "./load-env";
 import {
   formatCoverageLine,
+  formatDealParametersLine,
+  listDealParameterValues,
   listFilledMetadataKeys,
   parseCoverage,
 } from "./lib/document-report";
@@ -10,6 +12,7 @@ loadEnvLocal();
 const USAGE = `Usage:
   npx tsx scripts/diagnostics.ts classification [limit=5]
   npx tsx scripts/diagnostics.ts metadata [--ola]
+  npx tsx scripts/diagnostics.ts deal-parameters [--ola]
   npx tsx scripts/diagnostics.ts ola-sections [documentId]`;
 
 async function runClassification(limit: number) {
@@ -82,6 +85,7 @@ async function runMetadata(olaOnly: boolean) {
     console.log(`  type: ${row.documentType} / ${row.dealType}`);
     console.log(`  model: ${row.extractionModel ?? "—"}`);
     console.log(`  governing law: ${row.governingLaw ?? "—"}`);
+    console.log(`  ${formatDealParametersLine(row.metadata)}`);
 
     const coverage = parseCoverage(row.metadata);
     if (coverage) {
@@ -91,6 +95,30 @@ async function runMetadata(olaOnly: boolean) {
 
     for (const { key, value } of listFilledMetadataKeys(row.metadata)) {
       console.log(`  ${key}=${value.slice(0, 60)}`);
+    }
+  }
+}
+
+async function runDealParameters(olaOnly: boolean) {
+  const { eq } = await import("drizzle-orm");
+  const { db } = await import("../src/lib/db");
+  const { documents } = await import("../src/lib/db/schema");
+
+  const rows = olaOnly
+    ? await db
+        .select()
+        .from(documents)
+        .where(eq(documents.documentType, "OLA"))
+    : await db.select().from(documents).orderBy(documents.createdAt);
+
+  for (const row of rows) {
+    console.log("\n" + "=".repeat(70));
+    console.log(row.filename);
+    console.log(`  type: ${row.documentType} / ${row.dealType}`);
+    console.log(`  ${formatDealParametersLine(row.metadata)}`);
+
+    for (const { key, value } of listDealParameterValues(row.metadata)) {
+      console.log(`  ${key}=${value.slice(0, 80)}`);
     }
   }
 }
@@ -147,6 +175,9 @@ async function main() {
       break;
     case "metadata":
       await runMetadata(rest.includes("--ola"));
+      break;
+    case "deal-parameters":
+      await runDealParameters(rest.includes("--ola"));
       break;
     case "ola-sections":
       await runOlaSections(rest[0]);

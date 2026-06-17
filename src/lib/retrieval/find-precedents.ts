@@ -23,7 +23,9 @@ export type PrecedentHit = {
   currency: string | null;
   matchScore: number;
   matchedParameters: number;
+  matchedWeight: number;
   comparedParameters: number;
+  comparedWeight: number;
   parameterMatches: PrecedentScore["matches"];
 };
 
@@ -95,17 +97,22 @@ export async function findPrecedentDocuments(
         currency: row.currency,
         matchScore: precedentScore.score,
         matchedParameters: precedentScore.matchedParameters,
+        matchedWeight: precedentScore.matchedWeight,
         comparedParameters: precedentScore.comparedParameters,
+        comparedWeight: precedentScore.comparedWeight,
         parameterMatches: precedentScore.matches,
       } satisfies PrecedentHit;
     })
     .filter((row): row is PrecedentHit => row !== null)
     .sort((a, b) => {
-      if (b.matchedParameters !== a.matchedParameters) {
-        return b.matchedParameters - a.matchedParameters;
-      }
       if (b.matchScore !== a.matchScore) {
         return b.matchScore - a.matchScore;
+      }
+      if (b.matchedWeight !== a.matchedWeight) {
+        return b.matchedWeight - a.matchedWeight;
+      }
+      if (b.matchedParameters !== a.matchedParameters) {
+        return b.matchedParameters - a.matchedParameters;
       }
       return b.comparedParameters - a.comparedParameters;
     })

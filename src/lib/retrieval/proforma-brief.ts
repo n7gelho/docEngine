@@ -5,6 +5,25 @@ import {
   parseMonthlyRentAmount,
 } from "@/lib/extraction/deal-parameters";
 import type { DocumentMetadataJson } from "@/lib/db/schema";
+import { normalizeAircraftModelCode } from "@/lib/retrieval/aircraft-model";
+
+/** Relative importance when aggregating precedent similarity (default 1). */
+export const DEAL_PARAMETER_WEIGHTS: Record<DealParameterKey, number> = {
+  counterparty: 3,
+  aircraft: 3,
+  aircraft_count: 1,
+  transaction_type: 1,
+  lease_term: 1,
+  monthly_rent: 1,
+  security_deposit: 1,
+  maintenance_reserve: 1,
+  insurance: 1,
+  expected_delivery: 1,
+};
+
+export function getParameterWeight(key: DealParameterKey): number {
+  return DEAL_PARAMETER_WEIGHTS[key] ?? 1;
+}
 
 /** User-provided proforma values (sparse — only filled fields are compared). */
 export type ProformaBrief = Partial<
@@ -84,10 +103,6 @@ function normalizeToken(value: string): string {
     .replace(/\s+/g, " ");
 }
 
-function normalizeAircraftCode(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
 function tokenOverlapScore(a: string, b: string): number {
   const left = normalizeToken(a);
   const right = normalizeToken(b);
@@ -138,7 +153,9 @@ export function scoreParameterPair(
 
   switch (key) {
     case "aircraft":
-      return normalizeAircraftCode(left) === normalizeAircraftCode(right) ? 1 : 0;
+      return normalizeAircraftModelCode(left) === normalizeAircraftModelCode(right)
+        ? 1
+        : 0;
     case "aircraft_count":
       return numericSimilarity(briefValue, docValue, 0);
     case "monthly_rent":
@@ -164,11 +181,16 @@ export type ParameterMatchDetail = {
   documentValue: string | null;
   score: number;
   matched: boolean;
+  weight: number;
 };
 
 export type PrecedentScore = {
   comparedParameters: number;
   matchedParameters: number;
+  /** Sum of weights for parameters that matched (score ≥ 0.75). */
+  matchedWeight: number;
+  /** Sum of weights for all compared parameters. */
+  comparedWeight: number;
   score: number;
   matches: ParameterMatchDetail[];
 };
@@ -183,13 +205,18 @@ export function scoreDocumentAgainstBrief(
 
   let compared = 0;
   let matched = 0;
-  let totalScore = 0;
+  let weightedScoreSum = 0;
+  let comparedWeight = 0;
+  let matchedWeight = 0;
 
   for (const key of filledKeys) {
     const briefValue = normalizeBriefValue(brief[key]);
     if (!briefValue) continue;
 
+    const weight = getParameterWeight(key);
     compared++;
+    comparedWeight += weight;
+
     const docRaw = parameters?.[key]?.value ?? null;
     const docComparable =
       typeof docRaw === "string" || typeof docRaw === "number" ? docRaw : null;
@@ -198,8 +225,11 @@ export function scoreDocumentAgainstBrief(
     const pairScore = scoreParameterPair(key, briefValue, docComparable);
     const isMatch = pairScore >= 0.75;
 
-    if (isMatch) matched++;
-    totalScore += pairScore;
+    if (isMatch) {
+      matched++;
+      matchedWeight += weight;
+    }
+    weightedScoreSum += pairScore * weight;
 
     matches.push({
       key,
@@ -208,13 +238,16 @@ export function scoreDocumentAgainstBrief(
       documentValue: docValue,
       score: pairScore,
       matched: isMatch,
+      weight,
     });
   }
 
   return {
     comparedParameters: compared,
     matchedParameters: matched,
-    score: compared > 0 ? totalScore / compared : 0,
+    matchedWeight,
+    comparedWeight,
+    score: comparedWeight > 0 ? weightedScoreSum / comparedWeight : 0,
     matches,
   };
 }

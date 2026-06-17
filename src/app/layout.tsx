@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Aircraft Deal Document Engine",
+  title: "docEngine",
   description:
     "Ingest purchase and lease deal documents, extract metadata, filter, and link LOIs to OLAs.",
 };
@@ -32,7 +32,7 @@ export default function RootLayout({
         <header className="border-b border-border bg-white">
           <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6">
             <Link href="/" className="text-lg font-semibold text-slate-900">
-              Aircraft Deal Document Engine
+              docEngine
             </Link>
             <nav className="flex gap-4 text-sm">
               <Link href="/" className="text-slate-600 hover:text-primary">

@@ -66,11 +66,11 @@ export default function HomePage() {
     <div className="space-y-8">
       <section>
         <h1 className="text-3xl font-bold tracking-tight">
-          Aircraft Deal Document Engine
+          Upload documents
         </h1>
         <p className="mt-2 max-w-3xl text-muted">
-          Ingest aircraft purchase and lease deal documents, extract structured
-          metadata, and link corresponding LOIs and OLAs.
+          Add aircraft purchase and lease deal documents to your library. We
+          extract structured metadata and link corresponding LOIs and OLAs.
         </p>
       </section>
 

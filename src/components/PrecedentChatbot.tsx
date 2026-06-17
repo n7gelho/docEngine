@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DealParameterKey } from "@/lib/extraction/deal-parameters";
 import { DEAL_PARAMETER_KEYS } from "@/lib/extraction/deal-parameters";
@@ -31,6 +32,8 @@ type PrecedentResult = {
   monthlyRent: number | null;
   currency: string | null;
   matchScore: number;
+  templateFitness: number;
+  combinedScore: number;
   matchedParameters: number;
   comparedParameters: number;
   parameterMatches: Array<{
@@ -110,6 +113,7 @@ function withoutSearchOutputMessages(
 }
 
 export function PrecedentChatbot() {
+  const router = useRouter();
   const [messages, setMessages] = useState<ChatMessage[]>([
     assistantText(
       "I'll help you find the three most similar lease contracts in your library. First, which document are you preparing?"
@@ -130,6 +134,10 @@ export function PrecedentChatbot() {
   const [activeReviewMessageId, setActiveReviewMessageId] = useState<
     string | null
   >(null);
+  const [selectedPrecedentIds, setSelectedPrecedentIds] = useState<Set<string>>(
+    new Set()
+  );
+  const [generating, setGenerating] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -378,6 +386,13 @@ export function PrecedentChatbot() {
             ];
 
       publishSearchOutcome(outcome, searchingMessageId);
+      if (searchResults.length > 0) {
+        setSelectedPrecedentIds(
+          new Set([searchResults[0].documentId])
+        );
+      } else {
+        setSelectedPrecedentIds(new Set());
+      }
       setStep("done");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Search failed";
@@ -420,6 +435,8 @@ export function PrecedentChatbot() {
     setExtraReviewKeys([]);
     setTargetDocumentType(null);
     setActiveReviewMessageId(null);
+    setSelectedPrecedentIds(new Set());
+    setGenerating(false);
     setMessages([
       assistantText(
         "I'll help you find the three most similar lease contracts in your library. First, which document are you preparing?"
@@ -544,24 +561,116 @@ export function PrecedentChatbot() {
     );
   }
 
+  async function handleGenerateLoi(templateOnly: boolean) {
+    if (targetDocumentType !== "LOI") {
+      setError("LOI generation is only available when preparing an LOI.");
+      return;
+    }
+    if (filledCount === 0) {
+      setError("Provide at least one parameter before generating.");
+      return;
+    }
+    if (!templateOnly && selectedPrecedentIds.size === 0) {
+      setError("Select at least one precedent, or use template only.");
+      return;
+    }
+
+    const latestResults = [...messages]
+      .reverse()
+      .find(
+        (m): m is Extract<ChatMessage, { kind: "results" }> =>
+          m.kind === "results"
+      );
+    const precedentMatchScores = latestResults
+      ? Object.fromEntries(
+          latestResults.results.map((r) => [r.documentId, r.matchScore])
+        )
+      : {};
+
+    setGenerating(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/drafts/assemble", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          parameters: brief,
+          precedentDocumentIds: Array.from(selectedPrecedentIds),
+          templateOnly,
+          precedentMatchScores,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error ?? "Generation failed");
+      }
+      router.push(`/drafts/${data.draftId}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Generation failed");
+      setGenerating(false);
+    }
+  }
+
+  function togglePrecedentSelection(documentId: string) {
+    setSelectedPrecedentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(documentId)) next.delete(documentId);
+      else next.add(documentId);
+      return next;
+    });
+  }
+
   function renderResultsCard(message: Extract<ChatMessage, { kind: "results" }>) {
+    const isLoi = message.targetDocumentType === "LOI";
+    const selectedCount = selectedPrecedentIds.size;
+
     return (
       <div className="space-y-3">
         <p className="text-sm font-medium text-slate-800">
           Top {message.targetDocumentType} matches
         </p>
+        {isLoi && (
+          <p className="text-xs text-muted">
+            Ranked by combined deal + template fit. The top precedent is
+            pre-selected for generation (defines the LOI structure). Add others
+            only if they are similarly relevant.
+          </p>
+        )}
         <ul className="space-y-3">
           {message.results.map((result, index) => {
             const parties = formatParties(result);
+            const selected = selectedPrecedentIds.has(result.documentId);
             return (
               <li
                 key={result.documentId}
-                className="rounded-lg border border-border bg-slate-50/80 p-3"
+                className={`rounded-lg border p-3 ${
+                  selected && isLoi
+                    ? "border-primary/40 bg-primary/5"
+                    : "border-border bg-slate-50/80"
+                }`}
               >
                 <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div>
+                  <div className="flex min-w-0 flex-1 gap-2">
+                    {isLoi && (
+                      <input
+                        type="checkbox"
+                        className="mt-1 shrink-0"
+                        checked={selected}
+                        disabled={generating || loading}
+                        onChange={() =>
+                          togglePrecedentSelection(result.documentId)
+                        }
+                        aria-label={`Include ${result.filename} as precedent`}
+                      />
+                    )}
+                    <div className="min-w-0">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted">
                       #{index + 1}
+                      {isLoi && index === 0 && (
+                        <span className="ml-2 normal-case text-primary">
+                          · template donor
+                        </span>
+                      )}
                     </p>
                     <Link
                       href={`/documents/${result.documentId}`}
@@ -569,6 +678,7 @@ export function PrecedentChatbot() {
                     >
                       {result.filename}
                     </Link>
+                    </div>
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {result.dealType && (
@@ -579,8 +689,14 @@ export function PrecedentChatbot() {
                     <span className="badge bg-emerald-100 text-emerald-800">
                       {result.matchedParameters}/{result.comparedParameters} matched
                     </span>
+                    <span className="badge bg-primary/15 text-primary">
+                      {formatPercent(result.combinedScore)} overall
+                    </span>
                     <span className="badge bg-slate-100 text-slate-700">
-                      {formatPercent(result.matchScore)}
+                      {formatPercent(result.matchScore)} similar
+                    </span>
+                    <span className="badge bg-blue-100 text-blue-800">
+                      {formatPercent(result.templateFitness)} template
                     </span>
                   </div>
                 </div>
@@ -612,6 +728,28 @@ export function PrecedentChatbot() {
             );
           })}
         </ul>
+        {isLoi && message.results.length > 0 && (
+          <div className="flex flex-wrap gap-2 border-t border-border pt-3">
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={generating || loading || selectedCount === 0}
+              onClick={() => handleGenerateLoi(false)}
+            >
+              {generating
+                ? "Assembling…"
+                : `Generate LOI from selected (${selectedCount})`}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={generating || loading}
+              onClick={() => handleGenerateLoi(true)}
+            >
+              Template only
+            </button>
+          </div>
+        )}
       </div>
     );
   }

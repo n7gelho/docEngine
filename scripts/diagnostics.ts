@@ -13,7 +13,8 @@ const USAGE = `Usage:
   npx tsx scripts/diagnostics.ts classification [limit=5]
   npx tsx scripts/diagnostics.ts metadata [--ola]
   npx tsx scripts/diagnostics.ts deal-parameters [--ola]
-  npx tsx scripts/diagnostics.ts ola-sections [documentId]`;
+  npx tsx scripts/diagnostics.ts ola-sections [documentId]
+  npx tsx scripts/diagnostics.ts loi-sections [documentId]`;
 
 async function runClassification(limit: number) {
   const { desc } = await import("drizzle-orm");
@@ -162,6 +163,14 @@ async function runOlaSections(documentId?: string) {
   }
 }
 
+async function runLoiSections(documentId?: string) {
+  const { execSync } = await import("node:child_process");
+  const cmd = documentId
+    ? `npx tsx scripts/loi-section-diagnostics.ts ${documentId}`
+    : "npx tsx scripts/loi-section-diagnostics.ts";
+  execSync(cmd, { stdio: "inherit", cwd: process.cwd() });
+}
+
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
   if (!command) {
@@ -181,6 +190,9 @@ async function main() {
       break;
     case "ola-sections":
       await runOlaSections(rest[0]);
+      break;
+    case "loi-sections":
+      await runLoiSections(rest[0]);
       break;
     default:
       console.log(USAGE);

@@ -2,10 +2,14 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { documents } from "@/lib/db/schema";
 import {
+  computeCombinedScore,
+} from "@/lib/retrieval/precedent-combined-score";
+import {
   scoreDocumentAgainstBrief,
   type PrecedentScore,
   type ProformaBrief,
 } from "@/lib/retrieval/proforma-brief";
+import { computeTemplateFitness } from "@/lib/retrieval/template-fitness";
 
 export type PrecedentHit = {
   documentId: string;
@@ -22,6 +26,8 @@ export type PrecedentHit = {
   monthlyRent: number | null;
   currency: string | null;
   matchScore: number;
+  templateFitness: number;
+  combinedScore: number;
   matchedParameters: number;
   matchedWeight: number;
   comparedParameters: number;
@@ -56,7 +62,11 @@ export async function findPrecedentDocuments(
       leaseType: documents.leaseType,
       monthlyRent: documents.monthlyRent,
       currency: documents.currency,
+      governingLaw: documents.governingLaw,
+      effectiveDate: documents.effectiveDate,
+      fullText: documents.fullText,
       metadata: documents.metadata,
+      createdAt: documents.createdAt,
     })
     .from(documents)
     .where(eq(documents.status, "ready"));
@@ -81,6 +91,25 @@ export async function findPrecedentDocuments(
       const precedentScore = scoreDocumentAgainstBrief(options.brief, row.metadata);
       if (precedentScore.comparedParameters === 0) return null;
 
+      const templateFitness = computeTemplateFitness(
+        {
+          documentType: row.documentType,
+          dealType: row.dealType,
+          governingLaw: row.governingLaw,
+          effectiveDate: row.effectiveDate,
+          createdAt: row.createdAt,
+          metadata: row.metadata,
+          fullText: row.fullText,
+        },
+        options.brief,
+        { briefDealType: options.dealType }
+      ).score;
+
+      const combinedScore = computeCombinedScore(
+        precedentScore.score,
+        templateFitness
+      );
+
       return {
         documentId: row.id,
         filename: row.filename,
@@ -96,6 +125,8 @@ export async function findPrecedentDocuments(
         monthlyRent: row.monthlyRent,
         currency: row.currency,
         matchScore: precedentScore.score,
+        templateFitness,
+        combinedScore,
         matchedParameters: precedentScore.matchedParameters,
         matchedWeight: precedentScore.matchedWeight,
         comparedParameters: precedentScore.comparedParameters,
@@ -105,8 +136,14 @@ export async function findPrecedentDocuments(
     })
     .filter((row): row is PrecedentHit => row !== null)
     .sort((a, b) => {
+      if (b.combinedScore !== a.combinedScore) {
+        return b.combinedScore - a.combinedScore;
+      }
       if (b.matchScore !== a.matchScore) {
         return b.matchScore - a.matchScore;
+      }
+      if (b.templateFitness !== a.templateFitness) {
+        return b.templateFitness - a.templateFitness;
       }
       if (b.matchedWeight !== a.matchedWeight) {
         return b.matchedWeight - a.matchedWeight;

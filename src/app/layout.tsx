@@ -45,7 +45,7 @@ export default function RootLayout({
                 Semantic Search
               </Link>
               <Link href="/precedents" className="text-slate-600 hover:text-primary">
-                Precedent Finder
+                LOI generator
               </Link>
             </nav>
           </div>

@@ -188,3 +188,36 @@ export const dealDocuments = pgTable(
 
 export type Deal = typeof deals.$inferSelect;
 export type DealDocument = typeof dealDocuments.$inferSelect;
+
+export type LoiDraftStatus = "drafting" | "complete";
+
+export type LoiDraftJson = {
+  content: import("@/lib/generation/loi-draft-types").LoiDraftContent;
+  assemblyLog: import("@/lib/generation/loi-draft-types").AssemblyLogStep[];
+};
+
+export const loiDrafts = pgTable(
+  "loi_drafts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    brief: jsonb("brief").$type<Record<string, string | number | null>>().default({}),
+    precedentDocumentIds: jsonb("precedent_document_ids")
+      .$type<string[]>()
+      .default([]),
+    content: jsonb("content").notNull(),
+    assemblyLog: jsonb("assembly_log").$type<LoiDraftJson["assemblyLog"]>().default([]),
+    completenessPct: integer("completeness_pct").notNull().default(0),
+    status: text("status").notNull().default("drafting"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("loi_drafts_status_idx").on(table.status)]
+);
+
+export type LoiDraft = typeof loiDrafts.$inferSelect;
+export type NewLoiDraft = typeof loiDrafts.$inferInsert;

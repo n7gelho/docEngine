@@ -4,10 +4,11 @@ export default function PrecedentsPage() {
   return (
     <div className="space-y-8">
       <section>
-        <h1 className="text-3xl font-bold tracking-tight">Contract precedent finder</h1>
+        <h1 className="text-3xl font-bold tracking-tight">LOI precedent finder</h1>
         <p className="mt-2 max-w-3xl text-muted">
-          Describe your new lease proforma — or upload it — and find the three most
-          similar contracts already in your library.
+          Describe or upload your proforma, find comparable LOIs, then generate a
+          full draft LOI: structure from the best template precedent, boilerplate
+          ported per section, and proforma values reconciled into the text.
         </p>
       </section>
 

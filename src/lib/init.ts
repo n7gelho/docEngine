@@ -117,6 +117,21 @@ export async function initializeApp() {
     await sql`ALTER TABLE deals ADD COLUMN IF NOT EXISTS buyer TEXT`;
     await sql`CREATE INDEX IF NOT EXISTS documents_deal_type_idx ON documents(deal_type)`;
     await sql`CREATE INDEX IF NOT EXISTS documents_counterparty_idx ON documents(counterparty)`;
+    await sql`
+      CREATE TABLE IF NOT EXISTS loi_drafts (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        title TEXT NOT NULL,
+        brief JSONB DEFAULT '{}',
+        precedent_document_ids JSONB DEFAULT '[]',
+        content JSONB NOT NULL,
+        assembly_log JSONB DEFAULT '[]',
+        completeness_pct INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'drafting',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS loi_drafts_status_idx ON loi_drafts(status)`;
   } finally {
     await sql.end();
   }

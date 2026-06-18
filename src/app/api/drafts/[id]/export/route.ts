@@ -3,19 +3,30 @@ import { NextRequest, NextResponse } from "next/server";
 import { initializeApp } from "@/lib/init";
 import { db } from "@/lib/db";
 import { loiDrafts } from "@/lib/db/schema";
+import { renderLoiDraftText } from "@/lib/generation/assemble-loi-draft";
 import {
-  renderLoiDraftText,
-} from "@/lib/generation/assemble-loi-draft";
+  exportLoiDraft,
+  type LoiExportFormat,
+} from "@/lib/generation/export-loi-document";
 import type { LoiDraftContent } from "@/lib/generation/loi-draft-types";
 
 export const runtime = "nodejs";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-export async function GET(_request: NextRequest, context: RouteContext) {
+function parseExportFormat(value: string | null): LoiExportFormat {
+  if (value === "docx" || value === "pdf" || value === "txt") return value;
+  return "pdf";
+}
+
+export async function GET(request: NextRequest, context: RouteContext) {
   try {
     await initializeApp();
     const { id } = await context.params;
+    const format = parseExportFormat(
+      request.nextUrl.searchParams.get("format")
+    );
+
     const [draft] = await db
       .select()
       .from(loiDrafts)
@@ -26,12 +37,13 @@ export async function GET(_request: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "Draft not found" }, { status: 404 });
     }
 
-    const text = renderLoiDraftText(draft.content as LoiDraftContent);
+    const content = draft.content as LoiDraftContent;
+    const exported = await exportLoiDraft(content, format, renderLoiDraftText);
 
-    return new NextResponse(text, {
+    return new NextResponse(new Uint8Array(exported.buffer), {
       headers: {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Content-Disposition": `attachment; filename="loi-draft-${id.slice(0, 8)}.txt"`,
+        "Content-Type": exported.mimeType,
+        "Content-Disposition": `attachment; filename="${exported.filename}"`,
       },
     });
   } catch (error) {

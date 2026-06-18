@@ -1,29 +1,23 @@
-/** Balanced blend: deal similarity + template suitability. */
-export const COMBINED_SIMILAR_WEIGHT = 0.55;
-export const COMBINED_TEMPLATE_WEIGHT = 0.45;
+/** Field porting only from precedents within this gap of the best precedent score. */
+export const FIELD_DONOR_PRECEDENT_GAP = 0.1;
 
-/** Field porting only from precedents within this gap of the best combined score. */
-export const FIELD_DONOR_COMBINED_GAP = 0.1;
-
-export function computeCombinedScore(
+export function computePrecedentScore(
   matchScore: number,
-  templateFitness: number
+  suitabilityScore: number
 ): number {
-  return (
-    COMBINED_SIMILAR_WEIGHT * matchScore +
-    COMBINED_TEMPLATE_WEIGHT * templateFitness
-  );
+  if (matchScore <= 0 || suitabilityScore <= 0) return 0;
+  return (2 * matchScore * suitabilityScore) / (matchScore + suitabilityScore);
 }
 
-export function pickTopByCombinedScore<T extends { id: string }>(
+export function pickTopByPrecedentScore<T extends { id: string }>(
   items: T[],
-  getCombined: (item: T) => number
+  getPrecedentScore: (item: T) => number
 ): T | null {
   if (items.length === 0) return null;
 
   let best: { item: T; score: number } | null = null;
   for (const item of items) {
-    const score = getCombined(item);
+    const score = getPrecedentScore(item);
     if (!best || score > best.score) {
       best = { item, score };
     }
@@ -31,16 +25,16 @@ export function pickTopByCombinedScore<T extends { id: string }>(
   return best?.item ?? null;
 }
 
-/** Restrict field donors to precedents close to the best overall combined score. */
+/** Restrict field donors to precedents close to the best overall precedent score. */
 export function filterEligibleFieldDonors<T extends { id: string }>(
   precedents: T[],
-  getCombined: (item: T) => number
+  getPrecedentScore: (item: T) => number
 ): T[] {
   if (precedents.length <= 1) return precedents;
 
-  const topScore = Math.max(...precedents.map(getCombined));
-  const minAllowed = topScore - FIELD_DONOR_COMBINED_GAP;
+  const topScore = Math.max(...precedents.map(getPrecedentScore));
+  const minAllowed = topScore - FIELD_DONOR_PRECEDENT_GAP;
 
-  const eligible = precedents.filter((p) => getCombined(p) >= minAllowed);
+  const eligible = precedents.filter((p) => getPrecedentScore(p) >= minAllowed);
   return eligible.length > 0 ? eligible : precedents.slice(0, 1);
 }

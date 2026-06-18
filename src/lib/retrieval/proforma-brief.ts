@@ -28,7 +28,14 @@ export function getParameterWeight(key: DealParameterKey): number {
 /** User-provided proforma values (sparse — only filled fields are compared). */
 export type ProformaBrief = Partial<
   Record<DealParameterKey, string | number | null>
->;
+> & {
+  /** Optional governing law for suitability scoring (not a deal parameter). */
+  governingLaw?: string | null;
+};
+
+export function getProformaGoverningLaw(brief: ProformaBrief): string | null {
+  return normalizeBriefValue(brief.governingLaw);
+}
 
 export const DEAL_PARAMETER_LABELS: Record<DealParameterKey, string> = {
   counterparty: "Counterparty",
@@ -80,6 +87,12 @@ export function briefFromUnknownInput(
       brief[key] = value;
     }
   }
+
+  const governingLaw = input.governingLaw;
+  if (typeof governingLaw === "string" && governingLaw.trim()) {
+    brief.governingLaw = governingLaw.trim();
+  }
+
   return brief;
 }
 

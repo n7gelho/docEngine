@@ -31,9 +31,11 @@ type PrecedentResult = {
   leaseType: string | null;
   monthlyRent: number | null;
   currency: string | null;
+  governingLaw: string | null;
+  processedAt: string;
   matchScore: number;
-  templateFitness: number;
-  combinedScore: number;
+  suitabilityScore: number;
+  precedentScore: number;
   matchedParameters: number;
   comparedParameters: number;
   parameterMatches: Array<{
@@ -54,6 +56,7 @@ type ChatStep =
   | "wizard"
   | "upload"
   | "review"
+  | "governing-law"
   | "searching"
   | "done";
 
@@ -81,6 +84,16 @@ function nextMessageId(): string {
 
 function formatPercent(score: number): string {
   return `${Math.round(score * 100)}%`;
+}
+
+function formatProcessedDate(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 function assistantText(text: string): ChatMessage {
@@ -138,6 +151,7 @@ export function PrecedentChatbot() {
     new Set()
   );
   const [generating, setGenerating] = useState(false);
+  const [governingLawInput, setGoverningLawInput] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -202,6 +216,7 @@ export function PrecedentChatbot() {
     setQuestionIndex(0);
     setBrief({});
     setExtraReviewKeys([]);
+    setGoverningLawInput("");
     setError(null);
     setInputValue("");
     appendMessage(
@@ -215,6 +230,7 @@ export function PrecedentChatbot() {
     if (!targetDocumentType) return;
     setStep("upload");
     setExtraReviewKeys([]);
+    setGoverningLawInput("");
     setError(null);
     appendMessage(
       assistantText("Upload your proforma file (PDF or DOCX).")
@@ -314,17 +330,56 @@ export function PrecedentChatbot() {
     }
   }
 
-  async function handleSearch() {
+  function proceedToGoverningLaw() {
+    appendMessage(
+      assistantText(
+        "What governing law should apply to this deal? This helps rank precedents by legal fit. You can skip if you prefer not to specify."
+      )
+    );
+    setGoverningLawInput(
+      brief.governingLaw ? String(brief.governingLaw) : ""
+    );
+    setStep("governing-law");
+  }
+
+  function beginSearch(nextBrief: ProformaBrief) {
+    setBrief(nextBrief);
+    void handleSearch(nextBrief);
+  }
+
+  function skipGoverningLaw() {
+    appendMessage(userText("Skipped governing law"));
+    const nextBrief = { ...brief, governingLaw: null };
+    beginSearch(nextBrief);
+  }
+
+  function submitGoverningLaw(event: React.FormEvent) {
+    event.preventDefault();
+    const trimmed = governingLawInput.trim();
+    if (!trimmed) {
+      skipGoverningLaw();
+      return;
+    }
+    appendMessage(userText(trimmed));
+    beginSearch({ ...brief, governingLaw: trimmed });
+  }
+
+  function requestSearchFromReview() {
+    proceedToGoverningLaw();
+  }
+
+  async function handleSearch(briefOverride?: ProformaBrief) {
     if (!targetDocumentType) {
       setError("Select LOI or OLA before searching.");
       return;
     }
-    if (filledCount === 0) {
+    const searchBrief = briefOverride ?? brief;
+    if (getFilledBriefKeys(searchBrief).length === 0) {
       setError("Provide at least one parameter before searching.");
       return;
     }
 
-    const isResearch = step === "done";
+    const isResearch = messages.some((message) => message.kind === "results");
     const docLabelPlural = targetDocumentType === "LOI" ? "LOIs" : "OLAs";
 
     setLoading(true);
@@ -335,7 +390,7 @@ export function PrecedentChatbot() {
       if (activeReviewMessageId) {
         next = next.map((msg) =>
           msg.id === activeReviewMessageId && msg.kind === "parameters"
-            ? { ...msg, brief }
+            ? { ...msg, brief: searchBrief }
             : msg
         );
       }
@@ -356,7 +411,7 @@ export function PrecedentChatbot() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          parameters: brief,
+          parameters: searchBrief,
           limit: 3,
           dealType: "LEASE",
           documentType: targetDocumentType,
@@ -437,6 +492,7 @@ export function PrecedentChatbot() {
     setActiveReviewMessageId(null);
     setSelectedPrecedentIds(new Set());
     setGenerating(false);
+    setGoverningLawInput("");
     setMessages([
       assistantText(
         "I'll help you find the three most similar lease contracts in your library. First, which document are you preparing?"
@@ -549,7 +605,7 @@ export function PrecedentChatbot() {
           <button
             type="button"
             className="btn-primary w-full sm:w-auto"
-            onClick={handleSearch}
+            onClick={requestSearchFromReview}
             disabled={loading || filledCount === 0}
           >
             {step === "done" || step === "searching"
@@ -631,9 +687,9 @@ export function PrecedentChatbot() {
         </p>
         {isLoi && (
           <p className="text-xs text-muted">
-            Ranked by combined deal + template fit. The top precedent is
-            pre-selected for generation (defines the LOI structure). Add others
-            only if they are similarly relevant.
+            Ranked by precedent score (deal match + suitability). The top
+            precedent is pre-selected for generation (defines the LOI structure).
+            Add others only if they are similarly relevant.
           </p>
         )}
         <ul className="space-y-3">
@@ -686,17 +742,8 @@ export function PrecedentChatbot() {
                         {result.dealType}
                       </span>
                     )}
-                    <span className="badge bg-emerald-100 text-emerald-800">
-                      {result.matchedParameters}/{result.comparedParameters} matched
-                    </span>
                     <span className="badge bg-primary/15 text-primary">
-                      {formatPercent(result.combinedScore)} overall
-                    </span>
-                    <span className="badge bg-slate-100 text-slate-700">
-                      {formatPercent(result.matchScore)} similar
-                    </span>
-                    <span className="badge bg-blue-100 text-blue-800">
-                      {formatPercent(result.templateFitness)} template
+                      {formatPercent(result.precedentScore)} precedent
                     </span>
                   </div>
                 </div>
@@ -704,6 +751,11 @@ export function PrecedentChatbot() {
                   {[result.documentType, parties.primary, result.aircraftType]
                     .filter(Boolean)
                     .join(" · ")}
+                </p>
+                <p className="mt-1 text-xs text-muted">
+                  Governing law: {result.governingLaw ?? "—"}
+                  {" · "}
+                  Processed: {formatProcessedDate(result.processedAt)}
                 </p>
                 <p className="mt-1 text-xs text-muted">
                   {result.leaseType && `Type: ${result.leaseType}`}
@@ -853,6 +905,41 @@ export function PrecedentChatbot() {
                 </button>
               </div>
             </div>
+          )}
+
+          {step === "governing-law" && (
+            <form
+              onSubmit={submitGoverningLaw}
+              className="max-w-[95%] space-y-3 rounded-xl bg-white px-4 py-3 shadow-sm"
+            >
+              <div>
+                <p className="font-medium text-slate-800">Governing law</p>
+                <p className="mt-1 text-sm text-muted">
+                  e.g. laws of England and Wales, State of New York
+                </p>
+              </div>
+              <input
+                className="input"
+                value={governingLawInput}
+                onChange={(event) => setGoverningLawInput(event.target.value)}
+                placeholder="Leave blank to skip"
+                disabled={loading}
+                autoFocus
+              />
+              <div className="flex gap-2">
+                <button type="submit" className="btn-primary" disabled={loading}>
+                  Continue
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={skipGoverningLaw}
+                  disabled={loading}
+                >
+                  Skip
+                </button>
+              </div>
+            </form>
           )}
 
           {step === "wizard" && currentKey && (

@@ -162,6 +162,16 @@ export function extractLoiSections(fullText: string | null | undefined): Extract
   }));
 }
 
+/** Letterhead / title block before the first operative section in a template LOI. */
+export function extractTemplatePreamble(
+  fullText: string | null | undefined
+): string | null {
+  if (!fullText?.trim()) return null;
+  const sections = extractLoiSections(fullText);
+  const preamble = sections.find((s) => s.id === "preamble");
+  return preamble?.fullText.trim() ?? null;
+}
+
 const LOI_HEADING_LINE =
   /^(?:(?:\d+(?:\.\d+)*\.?\s+)|(?:CLAUSE|ARTICLE|SCHEDULE)\s+\d+(?:\.\d+)?[.:]?\s+)?(?:[A-Z][A-Z0-9\s\-\/&(),.'"]{3,}|[A-Z][a-z]+(?:\s+[A-Za-z]+){1,8})$/;
 

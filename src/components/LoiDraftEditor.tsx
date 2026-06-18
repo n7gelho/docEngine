@@ -123,7 +123,21 @@ export function LoiDraftEditor({ draftId }: { draftId: string }) {
         </div>
         <div className="flex flex-wrap gap-2">
           <a
-            href={`/api/drafts/${draftId}/export`}
+            href={`/api/drafts/${draftId}/export?format=pdf`}
+            className="btn-primary"
+            download
+          >
+            Export PDF
+          </a>
+          <a
+            href={`/api/drafts/${draftId}/export?format=docx`}
+            className="btn-secondary"
+            download
+          >
+            Export Word
+          </a>
+          <a
+            href={`/api/drafts/${draftId}/export?format=txt`}
             className="btn-secondary"
             download
           >
@@ -148,7 +162,9 @@ export function LoiDraftEditor({ draftId }: { draftId: string }) {
         <div className="card space-y-6">
           <p className="text-xs text-muted">
             Sections are ported from precedents and reconciled with your
-            proforma. Edit any section below, then export the full LOI text.
+            proforma. Export as PDF or Word — layout follows your template
+            precedent (letterhead + section structure); empty sections are
+            omitted.
           </p>
           {draft.content.sections.map((section) => (
             <section key={section.id}>

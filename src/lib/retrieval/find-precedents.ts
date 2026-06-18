@@ -1,15 +1,13 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { documents } from "@/lib/db/schema";
-import {
-  computeCombinedScore,
-} from "@/lib/retrieval/precedent-combined-score";
+import { computePrecedentScore } from "@/lib/retrieval/precedent-combined-score";
 import {
   scoreDocumentAgainstBrief,
   type PrecedentScore,
   type ProformaBrief,
 } from "@/lib/retrieval/proforma-brief";
-import { computeTemplateFitness } from "@/lib/retrieval/template-fitness";
+import { computeSuitabilityScore } from "@/lib/retrieval/template-fitness";
 
 export type PrecedentHit = {
   documentId: string;
@@ -25,9 +23,11 @@ export type PrecedentHit = {
   leaseType: string | null;
   monthlyRent: number | null;
   currency: string | null;
+  governingLaw: string | null;
+  processedAt: string;
   matchScore: number;
-  templateFitness: number;
-  combinedScore: number;
+  suitabilityScore: number;
+  precedentScore: number;
   matchedParameters: number;
   matchedWeight: number;
   comparedParameters: number;
@@ -63,8 +63,6 @@ export async function findPrecedentDocuments(
       monthlyRent: documents.monthlyRent,
       currency: documents.currency,
       governingLaw: documents.governingLaw,
-      effectiveDate: documents.effectiveDate,
-      fullText: documents.fullText,
       metadata: documents.metadata,
       createdAt: documents.createdAt,
     })
@@ -88,27 +86,22 @@ export async function findPrecedentDocuments(
         return null;
       }
 
-      const precedentScore = scoreDocumentAgainstBrief(options.brief, row.metadata);
-      if (precedentScore.comparedParameters === 0) return null;
-
-      const templateFitness = computeTemplateFitness(
-        {
-          documentType: row.documentType,
-          dealType: row.dealType,
-          governingLaw: row.governingLaw,
-          effectiveDate: row.effectiveDate,
-          createdAt: row.createdAt,
-          metadata: row.metadata,
-          fullText: row.fullText,
-        },
+      const parameterScore = scoreDocumentAgainstBrief(
         options.brief,
-        { briefDealType: options.dealType }
+        row.metadata
+      );
+      if (parameterScore.comparedParameters === 0) return null;
+
+      const suitabilityScore = computeSuitabilityScore(
+        {
+          governingLaw: row.governingLaw,
+          createdAt: row.createdAt,
+        },
+        options.brief
       ).score;
 
-      const combinedScore = computeCombinedScore(
-        precedentScore.score,
-        templateFitness
-      );
+      const matchScore = parameterScore.score;
+      const precedentScore = computePrecedentScore(matchScore, suitabilityScore);
 
       return {
         documentId: row.id,
@@ -124,26 +117,28 @@ export async function findPrecedentDocuments(
         leaseType: row.leaseType,
         monthlyRent: row.monthlyRent,
         currency: row.currency,
-        matchScore: precedentScore.score,
-        templateFitness,
-        combinedScore,
-        matchedParameters: precedentScore.matchedParameters,
-        matchedWeight: precedentScore.matchedWeight,
-        comparedParameters: precedentScore.comparedParameters,
-        comparedWeight: precedentScore.comparedWeight,
-        parameterMatches: precedentScore.matches,
+        governingLaw: row.governingLaw,
+        processedAt: row.createdAt.toISOString(),
+        matchScore,
+        suitabilityScore,
+        precedentScore,
+        matchedParameters: parameterScore.matchedParameters,
+        matchedWeight: parameterScore.matchedWeight,
+        comparedParameters: parameterScore.comparedParameters,
+        comparedWeight: parameterScore.comparedWeight,
+        parameterMatches: parameterScore.matches,
       } satisfies PrecedentHit;
     })
     .filter((row): row is PrecedentHit => row !== null)
     .sort((a, b) => {
-      if (b.combinedScore !== a.combinedScore) {
-        return b.combinedScore - a.combinedScore;
+      if (b.precedentScore !== a.precedentScore) {
+        return b.precedentScore - a.precedentScore;
       }
       if (b.matchScore !== a.matchScore) {
         return b.matchScore - a.matchScore;
       }
-      if (b.templateFitness !== a.templateFitness) {
-        return b.templateFitness - a.templateFitness;
+      if (b.suitabilityScore !== a.suitabilityScore) {
+        return b.suitabilityScore - a.suitabilityScore;
       }
       if (b.matchedWeight !== a.matchedWeight) {
         return b.matchedWeight - a.matchedWeight;

@@ -33,13 +33,11 @@ import {
   type ProformaBrief,
 } from "@/lib/retrieval/proforma-brief";
 import {
-  computeCombinedScore,
+  computePrecedentScore,
   filterEligibleFieldDonors,
-  pickTopByCombinedScore,
+  pickTopByPrecedentScore,
 } from "@/lib/retrieval/precedent-combined-score";
-import {
-  computeTemplateFitness,
-} from "@/lib/retrieval/template-fitness";
+import { computeSuitabilityScore } from "@/lib/retrieval/template-fitness";
 
 type PrecedentSource = {
   id: string;
@@ -57,8 +55,8 @@ type PrecedentSource = {
   parameters: Record<DealParameterKey, { value: string | number | null }>;
   sections: ExtractedLoiSection[];
   matchScore: number;
-  templateFitness: number;
-  combinedScore: number;
+  suitabilityScore: number;
+  precedentScore: number;
 };
 
 function documentToPrecedentSource(
@@ -95,19 +93,19 @@ function documentToPrecedentSource(
     flat[key] = { value: normalized };
   }
 
-  const templateFitness = computeTemplateFitness(
+  const suitabilityScore = computeSuitabilityScore(
     {
-      documentType: row.documentType,
-      dealType: row.dealType,
       governingLaw: row.governingLaw,
-      effectiveDate: row.effectiveDate,
       createdAt: row.createdAt,
-      metadata: row.metadata ?? {},
-      fullText: row.fullText,
     },
-    brief,
-    { briefDealType: row.dealType ?? "LEASE" }
+    brief
   ).score;
+
+  const resolvedMatchScore = matchScore;
+  const precedentScore = computePrecedentScore(
+    resolvedMatchScore,
+    suitabilityScore
+  );
 
   return {
     id: row.id,
@@ -124,9 +122,9 @@ function documentToPrecedentSource(
     createdAt: row.createdAt,
     parameters: flat,
     sections: extractLoiSections(row.fullText),
-    matchScore,
-    templateFitness,
-    combinedScore: computeCombinedScore(matchScore, templateFitness),
+    matchScore: resolvedMatchScore,
+    suitabilityScore,
+    precedentScore,
   };
 }
 
@@ -522,12 +520,12 @@ export async function assembleLoiDraft(
 
   const fieldDonors =
     !templateOnly && precedents.length > 0
-      ? filterEligibleFieldDonors(precedents, (p) => p.combinedScore)
+      ? filterEligibleFieldDonors(precedents, (p) => p.precedentScore)
       : precedents;
 
   const templateDonor =
     !templateOnly && precedents.length > 0
-      ? pickTopByCombinedScore(precedents, (p) => p.combinedScore)
+      ? pickTopByPrecedentScore(precedents, (p) => p.precedentScore)
       : null;
 
   const proformaFilled = getFilledBriefKeys(input.brief).length;
@@ -552,13 +550,13 @@ export async function assembleLoiDraft(
 
     assemblyLog.push({
       step: "Derived empty template from precedent",
-      detail: `${donorWithSections.filename} — ${donorWithSections.sections.length} sections (combined score ${Math.round(donorWithSections.combinedScore * 100)}%)`,
+      detail: `${donorWithSections.filename} — ${donorWithSections.sections.length} sections (precedent score ${Math.round(donorWithSections.precedentScore * 100)}%)`,
     });
 
     if (!templateOnly) {
       assemblyLog.push({
         step: "Pulled relevant precedents",
-        detail: `${fieldDonors.length} of ${precedents.length} selected LOI${precedents.length === 1 ? "" : "s"} used for field porting (within combined-score threshold)`,
+        detail: `${fieldDonors.length} of ${precedents.length} selected LOI${precedents.length === 1 ? "" : "s"} used for field porting (within precedent-score threshold)`,
       });
     }
 
@@ -590,7 +588,7 @@ export async function assembleLoiDraft(
     if (!templateOnly && fieldDonors.length > 0) {
       assemblyLog.push({
         step: "Pulled relevant precedents",
-        detail: `${fieldDonors.length} of ${precedents.length} selected LOI${precedents.length === 1 ? "" : "s"} used for field porting (within combined-score threshold)`,
+        detail: `${fieldDonors.length} of ${precedents.length} selected LOI${precedents.length === 1 ? "" : "s"} used for field porting (within precedent-score threshold)`,
       });
     } else {
       assemblyLog.push({

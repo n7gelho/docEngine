@@ -58,6 +58,9 @@ export type LoiDraftContent = {
 
   documentTitle: string;
 
+  /** Main letterhead title on PDF/Word export (default: LETTER OF INTENT). */
+  letterheadTitle?: string | null;
+
   /** ID of the precedent used to derive template structure. */
 
   templateDocumentId?: string | null;

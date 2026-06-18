@@ -649,6 +649,7 @@ export async function assembleLoiDraft(
 
   const content: LoiDraftContent = {
     documentTitle: buildProjectTitle(input.brief, input.projectTitle),
+    letterheadTitle: "LETTER OF INTENT",
     templateDocumentId,
     templateFilename,
     sections,

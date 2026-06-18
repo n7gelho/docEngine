@@ -224,7 +224,9 @@ export async function exportLoiAsDocx(
 ): Promise<Buffer> {
   const children: Array<Paragraph | Table> = [];
 
-  children.push(titleParagraph("LETTER OF INTENT"));
+  children.push(
+    titleParagraph(input.content.letterheadTitle?.trim() || "LETTER OF INTENT")
+  );
 
   const docTitle =
     input.content.documentTitle?.trim() ||

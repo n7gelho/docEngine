@@ -112,7 +112,8 @@ function drawLetterhead(
     color: rgb(0.75, 0.75, 0.78),
   });
 
-  const title = "LETTER OF INTENT";
+  const title =
+    input.content.letterheadTitle?.trim() || "LETTER OF INTENT";
   const titleWidth = fonts.bold.widthOfTextAtSize(title, TITLE_SIZE);
   page.drawText(title, {
     x: (pageWidth - titleWidth) / 2,
@@ -135,18 +136,6 @@ function drawLetterhead(
       size: SUBTITLE_SIZE,
       font: fonts.regular,
       color: rgb(0.25, 0.25, 0.3),
-    });
-  }
-
-  if (input.templateFilename) {
-    const ref = `Based on precedent: ${sanitizeForPdfLib(input.templateFilename)}`;
-    const refWidth = fonts.regular.widthOfTextAtSize(ref, 9);
-    page.drawText(ref, {
-      x: (pageWidth - refWidth) / 2,
-      y: pageHeight - 82,
-      size: 9,
-      font: fonts.regular,
-      color: rgb(0.45, 0.45, 0.5),
     });
   }
 

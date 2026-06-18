@@ -8,12 +8,17 @@ import {
 } from "@/lib/retrieval/proforma-brief";
 import {
   buildGoverningLawPairs,
+  buildLessorAliasPairs,
   buildReplacementPairs,
   type ReplacementPair,
 } from "@/lib/generation/reconcile-variants";
+import {
+  collectWrongLesseeNames,
+  replaceWrongLesseeNamesOutsidePreviousLessee,
+} from "@/lib/generation/party-resolution";
 
 export type ReconcileSubstitution = {
-  key: DealParameterKey | "governing_law";
+  key: DealParameterKey | "governing_law" | "lessor" | "lessee";
   label: string;
   from: string;
   to: string;
@@ -32,6 +37,9 @@ export type ReconcilePrecedentExtras = {
   seller?: string | null;
   buyer?: string | null;
   currency?: string | null;
+  /** Authoritative parties from the selected template donor. */
+  templateLessor?: string | null;
+  templateLessee?: string | null;
 };
 
 function escapeRegExp(value: string): string {
@@ -88,7 +96,10 @@ function replaceAllInsensitive(
 function applyReplacementPairs(
   text: string,
   pairs: ReplacementPair[],
-  meta: { key: DealParameterKey | "governing_law"; label: string },
+  meta: {
+    key: DealParameterKey | "governing_law" | "lessor" | "lessee";
+    label: string;
+  },
   substitutions: ReconcileSubstitution[]
 ): string {
   let next = text;
@@ -151,25 +162,88 @@ export function reconcileBoilerplateWithProforma(
     label: "Governing law",
   }, substitutions);
 
-  const partyPairs: Array<{ from: string | null | undefined; to: string | null | undefined; label: string }> = [
-    { from: extras?.lessor, to: normalizeBriefValue(brief.counterparty), label: "Lessor" },
-    { from: extras?.lessee, to: normalizeBriefValue(brief.counterparty), label: "Lessee" },
-    { from: extras?.seller, to: normalizeBriefValue(brief.counterparty), label: "Seller" },
-    { from: extras?.buyer, to: normalizeBriefValue(brief.counterparty), label: "Buyer" },
-  ];
+  const proformaLessee = normalizeBriefValue(brief.counterparty);
+  const templateLessor = extras?.templateLessor?.trim() ?? extras?.lessor?.trim() ?? null;
+  const templateLessee = extras?.templateLessee?.trim() ?? null;
 
-  for (const party of partyPairs) {
-    const from = party.from?.trim();
-    const to = party.to?.trim();
-    if (!from || !to || from.toLowerCase() === to.toLowerCase()) continue;
-    if (precedentValues.counterparty && from === precedentValues.counterparty.trim()) {
-      continue;
+  if (proformaLessee) {
+    const lesseeSources = new Set<string>();
+    if (extras?.lessee?.trim()) lesseeSources.add(extras.lessee.trim());
+    if (precedentValues.counterparty?.trim()) {
+      lesseeSources.add(precedentValues.counterparty.trim());
     }
-    const pairs = buildReplacementPairs("counterparty", from, to);
-    text = applyReplacementPairs(text, pairs, {
-      key: "counterparty",
-      label: party.label,
+    if (templateLessee && templateLessee.toLowerCase() !== proformaLessee.toLowerCase()) {
+      lesseeSources.add(templateLessee);
+    }
+
+    for (const from of lesseeSources) {
+      if (from.toLowerCase() === proformaLessee.toLowerCase()) continue;
+      const pairs = buildReplacementPairs("counterparty", from, proformaLessee);
+      text = applyReplacementPairs(text, pairs, {
+        key: "lessee",
+        label: "Lessee",
+      }, substitutions);
+    }
+  }
+
+  if (templateLessor) {
+    const lessorSources = new Set<string>();
+    if (extras?.lessor?.trim()) lessorSources.add(extras.lessor.trim());
+
+    for (const from of lessorSources) {
+      if (from.toLowerCase() === templateLessor.toLowerCase()) continue;
+      const pairs = buildReplacementPairs("counterparty", from, templateLessor);
+      text = applyReplacementPairs(text, pairs, {
+        key: "lessor",
+        label: "Lessor",
+      }, substitutions);
+    }
+
+    const aliasPairs = buildLessorAliasPairs(templateLessor);
+    text = applyReplacementPairs(text, aliasPairs, {
+      key: "lessor",
+      label: "Lessor alias",
     }, substitutions);
+  }
+
+  const purchaseCounterparty = normalizeBriefValue(brief.counterparty);
+  if (purchaseCounterparty) {
+    const purchasePairs: Array<{
+      from: string | null | undefined;
+      label: string;
+    }> = [
+      { from: extras?.buyer, label: "Buyer" },
+      { from: extras?.seller, label: "Seller" },
+    ];
+    for (const party of purchasePairs) {
+      const from = party.from?.trim();
+      if (!from || from.toLowerCase() === purchaseCounterparty.toLowerCase()) {
+        continue;
+      }
+      const pairs = buildReplacementPairs(
+        "counterparty",
+        from,
+        purchaseCounterparty
+      );
+      text = applyReplacementPairs(text, pairs, {
+        key: "counterparty",
+        label: party.label,
+      }, substitutions);
+    }
+  }
+
+  if (proformaLessee) {
+    const wrongLesseeNames = collectWrongLesseeNames({
+      proformaLessee,
+      templateLessee: extras?.templateLessee,
+      precedentLessee: extras?.lessee,
+      portedLessee: precedentValues.counterparty,
+    });
+    text = replaceWrongLesseeNamesOutsidePreviousLessee(
+      text,
+      wrongLesseeNames,
+      proformaLessee
+    );
   }
 
   return {
@@ -177,4 +251,40 @@ export function reconcileBoilerplateWithProforma(
     substitutions,
     reconciled: substitutions.length > 0,
   };
+}
+
+/** Apply brief/template party reconciliation when exporting stored draft text. */
+export function reconcileTextForExport(
+  text: string,
+  brief: ProformaBrief | null | undefined,
+  templateDoc?: {
+    lessor?: string | null;
+    lessee?: string | null;
+    seller?: string | null;
+    buyer?: string | null;
+    governingLaw?: string | null;
+    currency?: string | null;
+  } | null
+): string {
+  if (!text.trim() || !brief) return text;
+
+  const result = reconcileBoilerplateWithProforma(
+    text,
+    brief,
+    {
+      counterparty: normalizeBriefValue(brief.counterparty),
+    },
+    {
+      governingLaw: templateDoc?.governingLaw,
+      lessor: templateDoc?.lessor,
+      lessee: templateDoc?.lessee,
+      seller: templateDoc?.seller,
+      buyer: templateDoc?.buyer,
+      currency: templateDoc?.currency,
+      templateLessor: templateDoc?.lessor,
+      templateLessee: templateDoc?.lessee,
+    }
+  );
+
+  return result.text;
 }

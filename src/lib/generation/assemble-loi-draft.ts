@@ -16,6 +16,7 @@ import {
   LOI_MASTER_DOCUMENT_TITLE,
   LOI_MASTER_TEMPLATE_SECTIONS,
 } from "@/lib/generation/loi-master-template";
+import { peelEmbeddedPreambleFromFields } from "@/lib/generation/loi-preamble-split";
 import { reconcileBoilerplateWithProforma } from "@/lib/generation/proforma-reconcile";
 import type { ReconcilePrecedentExtras } from "@/lib/generation/proforma-reconcile";
 import type {
@@ -159,7 +160,8 @@ function precedentValuesForBriefKeys(
 }
 
 function reconcileExtrasForPrecedent(
-  precedent: PrecedentSource
+  precedent: PrecedentSource,
+  templateDonor?: PrecedentSource | null
 ): ReconcilePrecedentExtras {
   return {
     governingLaw: precedent.governingLaw,
@@ -168,6 +170,8 @@ function reconcileExtrasForPrecedent(
     seller: precedent.seller,
     buyer: precedent.buyer,
     currency: precedent.currency,
+    templateLessor: templateDonor?.lessor ?? precedent.lessor,
+    templateLessee: templateDonor?.lessee ?? precedent.lessee,
   };
 }
 
@@ -307,7 +311,8 @@ function resolveSectionField(
   precedents: PrecedentSource[],
   templateOnly: boolean,
   templateDonorId?: string | null,
-  usedDonorKeys?: Set<string>
+  usedDonorKeys?: Set<string>,
+  templateDonor?: PrecedentSource | null
 ): LoiDraftField {
   if (templateOnly || precedents.length === 0) {
     return {
@@ -353,7 +358,7 @@ function resolveSectionField(
     picked.text,
     brief,
     precedentValues,
-    reconcileExtrasForPrecedent(picked.precedent)
+    reconcileExtrasForPrecedent(picked.precedent, templateDonor)
   );
 
   usedDonorKeys?.add(picked.donorKey);
@@ -378,7 +383,8 @@ function resolveSectionField(
 function buildFromMasterTemplate(
   brief: ProformaBrief,
   precedents: PrecedentSource[],
-  templateOnly: boolean
+  templateOnly: boolean,
+  templateDonor?: PrecedentSource | null
 ): LoiDraftSection[] {
   return LOI_MASTER_TEMPLATE_SECTIONS.map((section) => ({
     id: section.id,
@@ -459,7 +465,7 @@ function buildFromMasterTemplate(
         best.value,
         brief,
         precedentValues,
-        reconcileExtrasForPrecedent(best.precedent)
+        reconcileExtrasForPrecedent(best.precedent, templateDonor)
       );
 
       const source: DraftFieldSource = reconciled.reconciled
@@ -586,21 +592,35 @@ export async function assembleLoiDraft(
       {
         id: "document_body",
         title: LOI_MASTER_DOCUMENT_TITLE,
-        fields: (() => {
-          const usedDonorKeys = new Set<string>();
-          return donorWithSections.sections.map((templateSection) =>
-            resolveSectionField(
-              templateSection,
-              input.brief,
-              fieldDonors,
-              templateOnly,
-              donorWithSections.id,
-              usedDonorKeys
-            )
-          );
-        })(),
+        fields: peelEmbeddedPreambleFromFields(
+          (() => {
+            const usedDonorKeys = new Set<string>();
+            return donorWithSections.sections.map((templateSection) =>
+              resolveSectionField(
+                templateSection,
+                input.brief,
+                fieldDonors,
+                templateOnly,
+                donorWithSections.id,
+                usedDonorKeys,
+                donorWithSections
+              )
+            );
+          })()
+        ),
       },
     ];
+
+    const peeledPreamble = sections[0]?.fields.find(
+      (field) => field.key === "preamble" && field.value?.trim()
+    );
+    if (peeledPreamble) {
+      assemblyLog.push({
+        step: "Separated preamble",
+        detail:
+          "Opening letter text moved to its own preamble section for export",
+      });
+    }
   } else {
     assemblyLog.push({
       step: "Matched master template",
@@ -619,7 +639,12 @@ export async function assembleLoiDraft(
       });
     }
 
-    sections = buildFromMasterTemplate(input.brief, fieldDonors, templateOnly);
+    sections = buildFromMasterTemplate(
+      input.brief,
+      fieldDonors,
+      templateOnly,
+      templateDonorRow
+    );
   }
 
   const content: LoiDraftContent = {

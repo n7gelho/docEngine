@@ -88,6 +88,33 @@ function partyVariants(precedent: string, proforma: string): ReplacementPair[] {
   return uniquePairs(pairs);
 }
 
+/** Common lessor aliases (e.g. BOCA → Bank of China Aviation). */
+export function buildLessorAliasPairs(canonicalLessor: string): ReplacementPair[] {
+  const primary = canonicalLessor
+    .split("\n")[0]
+    ?.replace(/\s*,\s*and\/or\b.*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!primary) return [];
+
+  const pairs: ReplacementPair[] = [];
+  const words = primary.split(/\s+/).filter(
+    (word) => !/^(?:and|or|of|the|&)$/i.test(word)
+  );
+  const acronym = words
+    .map((word) => word[0]?.toUpperCase() ?? "")
+    .join("");
+  if (acronym.length >= 2 && acronym.length <= 6) {
+    pairs.push({ from: acronym, to: primary });
+  }
+
+  if (/bank of china aviation/i.test(primary)) {
+    pairs.push({ from: "BOCA", to: primary });
+  }
+
+  return uniquePairs(pairs);
+}
+
 const AMOUNT_KEYS = new Set<DealParameterKey>([
   "monthly_rent",
   "security_deposit",

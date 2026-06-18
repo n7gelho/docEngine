@@ -6,13 +6,9 @@ import type { ExportDocumentInput } from "@/lib/generation/export-loi-shared";
 
 import {
   buildMergedExportSegments,
-  canUseHousePdfExport,
-  canUseTemplateSubstituteExport,
   resolveExportFooterLabel,
   type ExportContentSegment,
 } from "@/lib/generation/export-loi-shared";
-import { buildTemplateSubstitutions } from "@/lib/generation/export-loi-substitutions";
-import { exportLoiPdfSubstituteOnTemplate } from "@/lib/generation/export-loi-pdf-substitute";
 import { exportLoiPdfHouse } from "@/lib/generation/export-loi-pdf-house";
 
 
@@ -243,10 +239,7 @@ async function exportLoiAsPdfKit(
 
 
 
-export type LoiPdfExportStrategy =
-  | "template-substitute"
-  | "house"
-  | "regenerate";
+export type LoiPdfExportStrategy = "house" | "regenerate";
 
 export type LoiPdfExportResult = {
   buffer: Buffer;
@@ -256,35 +249,14 @@ export type LoiPdfExportResult = {
 export async function exportLoiAsPdf(
   input: ExportDocumentInput
 ): Promise<LoiPdfExportResult> {
-  if (canUseTemplateSubstituteExport(input)) {
-    try {
-      const substitutions = buildTemplateSubstitutions(
-        input.templateDoc,
-        input.brief
-      );
-      const buffer = await exportLoiPdfSubstituteOnTemplate(
-        input.templatePdfBuffer,
-        substitutions
-      );
-      return { buffer, strategy: "template-substitute" };
-    } catch (error) {
-      console.warn(
-        "[export-loi-pdf] template-substitute failed:",
-        error instanceof Error ? error.message : error
-      );
-    }
-  }
-
-  if (canUseHousePdfExport(input)) {
-    try {
-      const buffer = await exportLoiPdfHouse(input);
-      return { buffer, strategy: "house" };
-    } catch (error) {
-      console.warn(
-        "[export-loi-pdf] house template failed:",
-        error instanceof Error ? error.message : error
-      );
-    }
+  try {
+    const buffer = await exportLoiPdfHouse(input);
+    return { buffer, strategy: "house" };
+  } catch (error) {
+    console.warn(
+      "[export-loi-pdf] house template failed:",
+      error instanceof Error ? error.message : error
+    );
   }
 
   const buffer = await exportLoiAsPdfKit(input);

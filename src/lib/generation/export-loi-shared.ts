@@ -1,5 +1,12 @@
-import type { LoiDraftContent } from "@/lib/generation/loi-draft-types";
+import type { LoiDraftContent, LoiDraftField } from "@/lib/generation/loi-draft-types";
 import type { Document } from "@/lib/db/schema";
+import { peelEmbeddedPreambleFromFields } from "@/lib/generation/loi-preamble-split";
+import {
+  isLesseeNotLessor,
+  primaryPartyName,
+  resolveAuthoritativeLessorName,
+} from "@/lib/generation/party-resolution";
+import { reconcileTextForExport } from "@/lib/generation/proforma-reconcile";
 import {
   DEAL_PARAMETER_LABELS,
   getFilledBriefKeys,
@@ -85,6 +92,41 @@ export function collectExportFieldBlocks(
         text: normalizeExportText(text),
       });
     }
+  }
+
+  return blocks;
+}
+
+function flattenDraftFields(content: LoiDraftContent): LoiDraftField[] {
+  const fields: LoiDraftField[] = [];
+  for (const section of content.sections) {
+    fields.push(...section.fields);
+  }
+  return fields;
+}
+
+/** Peel preamble, reconcile parties, and normalize text for export. */
+export function prepareExportFieldBlocks(
+  input: ExportDocumentInput
+): ExportFieldBlock[] {
+  const peeled = peelEmbeddedPreambleFromFields(
+    flattenDraftFields(input.content)
+  );
+  const blocks: ExportFieldBlock[] = [];
+
+  for (const field of peeled) {
+    const raw = field.value?.trim();
+    if (!raw) continue;
+    const reconciled = reconcileTextForExport(
+      raw,
+      input.brief,
+      input.templateDoc
+    );
+    blocks.push({
+      key: field.key,
+      label: field.label,
+      text: normalizeExportText(reconciled),
+    });
   }
 
   return blocks;
@@ -342,7 +384,7 @@ export function parseBlockIntoSegments(text: string): ExportContentSegment[] {
 }
 
 export function resolvePreambleForExport(input: ExportDocumentInput): string | null {
-  const blocks = collectExportFieldBlocks(input.content);
+  const blocks = prepareExportFieldBlocks(input);
   const draftPreamble = blocks.find((b) => b.key === "preamble");
   if (draftPreamble?.text) return draftPreamble.text;
 
@@ -364,7 +406,7 @@ export function resolvePreambleForExport(input: ExportDocumentInput): string | n
 
 /** Draft already contains a full ported LOI — skip template page overlay. */
 export function draftHasFullContent(input: ExportDocumentInput): boolean {
-  const blocks = collectExportFieldBlocks(input.content);
+  const blocks = prepareExportFieldBlocks(input);
   const bodyBlocks = blocks.filter((b) => b.key !== "preamble");
   const hasPreamble = blocks.some((b) => b.key === "preamble" && b.text);
   if (hasPreamble && bodyBlocks.length >= 1) return true;
@@ -375,7 +417,7 @@ export function draftHasFullContent(input: ExportDocumentInput): boolean {
 export function resolveBodyBlocksForExport(
   input: ExportDocumentInput
 ): ExportFieldBlock[] {
-  const blocks = collectExportFieldBlocks(input.content);
+  const blocks = prepareExportFieldBlocks(input);
   const preamble = resolvePreambleForExport(input);
   const closing = resolveClosingBlockForExport(input);
   const body = blocks.filter(
@@ -410,7 +452,7 @@ export function resolveBodyBlocksForExport(
 export function resolveClosingBlockForExport(
   input: ExportDocumentInput
 ): string | null {
-  const blocks = collectExportFieldBlocks(input.content);
+  const blocks = prepareExportFieldBlocks(input);
   const draftClosing = blocks.find(
     (b) => b.key === "closing" || b.key === "signature"
   );
@@ -772,7 +814,19 @@ export function buildDealSummaryRows(
     push("Seller", summaryValue(undefined, doc?.seller));
     push("Buyer", summaryValue(brief?.counterparty, doc?.buyer));
   } else {
-    push("Lessor", summaryValue(undefined, doc?.lessor));
+    const blocks = prepareExportFieldBlocks(input);
+    const proformaLessee = normalizeBriefValue(brief?.counterparty);
+    let lessor = resolveAuthoritativeLessorName(input, blocks);
+    if (!lessor) {
+      const docLessor = summaryValue(undefined, doc?.lessor);
+      if (
+        docLessor &&
+        (!proformaLessee || !isLesseeNotLessor(docLessor, proformaLessee))
+      ) {
+        lessor = docLessor;
+      }
+    }
+    push("Lessor", lessor);
     push("Lessee", summaryValue(brief?.counterparty, doc?.lessee));
   }
 
@@ -811,35 +865,28 @@ export function buildDealSummaryRows(
   return rows;
 }
 
-/** Default PDF export uses the owned house layout (no precedent PDF overlay). */
-export function canUseHousePdfExport(input: ExportDocumentInput): boolean {
-  return collectExportFieldBlocks(input.content).length > 0;
+/** PDF export always uses the owned house layout (see export-loi-pdf.ts). */
+export function canUseHousePdfExport(_input: ExportDocumentInput): boolean {
+  return true;
 }
 
 /** Footer label: "{Lessor name} LOI" when lessor is known. */
 export function resolveExportFooterLabel(input: ExportDocumentInput): string {
+  const blocks = prepareExportFieldBlocks(input);
+  const authoritative = resolveAuthoritativeLessorName(input, blocks);
+
+  if (authoritative) {
+    return `${primaryPartyName(authoritative)} LOI`;
+  }
+
   const summaryLessor = buildDealSummaryRows(input).find(
     (row) => row.label === "Lessor" || row.label === "Seller"
   )?.value;
 
-  const fieldLessor = collectExportFieldBlocks(input.content).find(
-    (block) => block.key === "lessor"
-  )?.text;
+  if (summaryLessor) {
+    const primary = primaryPartyName(summaryLessor);
+    if (primary) return `${primary} LOI`;
+  }
 
-  const raw =
-    input.templateDoc?.lessor?.trim() ||
-    summaryLessor ||
-    fieldLessor ||
-    null;
-
-  if (!raw) return "LOI";
-
-  const primary = raw
-    .split("\n")[0]
-    ?.replace(/\s*,\s*and\/or\b.*$/i, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (!primary) return "LOI";
-  return `${primary} LOI`;
+  return "LOI";
 }

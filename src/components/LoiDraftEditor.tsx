@@ -2,7 +2,11 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { LoiDraftContent, LoiDraftField } from "@/lib/generation/loi-draft-types";
+import type {
+  LoiDraftContent,
+  LoiDraftField,
+  SectionPortProposal,
+} from "@/lib/generation/loi-draft-types";
 
 type DraftRecord = {
   id: string;
@@ -42,6 +46,10 @@ export function LoiDraftEditor({ draftId }: { draftId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [clauseProposals, setClauseProposals] = useState<SectionPortProposal[]>(
+    []
+  );
+  const [loadingProposals, setLoadingProposals] = useState(false);
 
   const loadDraft = useCallback(async () => {
     setLoading(true);
@@ -61,6 +69,153 @@ export function LoiDraftEditor({ draftId }: { draftId: string }) {
   useEffect(() => {
     void loadDraft();
   }, [loadDraft]);
+
+  const loadClauseProposals = useCallback(async () => {
+    setLoadingProposals(true);
+    try {
+      const res = await fetch(`/api/drafts/${draftId}/proposals`);
+      const data = await res.json();
+      if (!res.ok) return;
+      setClauseProposals((data.proposals ?? []) as SectionPortProposal[]);
+    } catch {
+      /* optional panel */
+    } finally {
+      setLoadingProposals(false);
+    }
+  }, [draftId]);
+
+  useEffect(() => {
+    if (draft && draft.precedentDocumentIds && draft.precedentDocumentIds.length > 0) {
+      void loadClauseProposals();
+    }
+  }, [draft, loadClauseProposals]);
+
+  async function adoptProposal(proposal: SectionPortProposal) {
+    const text = proposal.portedText?.trim() || proposal.previewText?.trim();
+    if (!text) return;
+
+    setSavingKey(`adopt:${proposal.sectionKey}`);
+    try {
+      const res = await fetch(`/api/drafts/${draftId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fieldKey: proposal.sectionKey, value: text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to adopt");
+      setDraft(data.draft);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to adopt clause");
+    } finally {
+      setSavingKey(null);
+    }
+  }
+
+  async function clearProposalField(sectionKey: string) {
+    setSavingKey(`clear:${sectionKey}`);
+    try {
+      const res = await fetch(`/api/drafts/${draftId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fieldKey: sectionKey, value: "" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to clear field");
+      setDraft(data.draft);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to clear field");
+    } finally {
+      setSavingKey(null);
+    }
+  }
+
+  const fieldByKey = useMemo(() => {
+    const map = new Map<string, LoiDraftField>();
+    if (!draft) return map;
+    for (const section of draft.content.sections) {
+      for (const field of section.fields) {
+        map.set(field.key, field);
+      }
+    }
+    return map;
+  }, [draft]);
+
+  const hasPrecedents = Boolean(
+    draft?.precedentDocumentIds && draft.precedentDocumentIds.length > 0
+  );
+
+  async function toggleFieldInclusion(proposal: SectionPortProposal) {
+    const field = fieldByKey.get(proposal.sectionKey);
+    const included = Boolean(field?.value?.trim());
+    if (included) {
+      await clearProposalField(proposal.sectionKey);
+    } else {
+      await adoptProposal(proposal);
+    }
+  }
+
+  const adoptableProposals = useMemo(
+    () =>
+      clauseProposals.filter(
+        (p) => p.portedText?.trim() || p.previewText?.trim()
+      ),
+    [clauseProposals]
+  );
+
+  const includedProposalCount = useMemo(
+    () =>
+      clauseProposals.filter((p) =>
+        Boolean(fieldByKey.get(p.sectionKey)?.value?.trim())
+      ).length,
+    [clauseProposals, fieldByKey]
+  );
+
+  const bulkBusy =
+    savingKey === "bulk:include" || savingKey === "bulk:exclude";
+
+  async function applyBulkFieldUpdates(
+    updates: Array<{ fieldKey: string; value: string | null }>,
+    action: "bulk:include" | "bulk:exclude"
+  ) {
+    if (updates.length === 0) return;
+
+    setSavingKey(action);
+    setError(null);
+    try {
+      const res = await fetch(`/api/drafts/${draftId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bulkFields: updates }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to update fields");
+      setDraft(data.draft);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update fields");
+    } finally {
+      setSavingKey(null);
+    }
+  }
+
+  async function includeAllFields() {
+    const updates = adoptableProposals
+      .filter((p) => !fieldByKey.get(p.sectionKey)?.value?.trim())
+      .map((p) => ({
+        fieldKey: p.sectionKey,
+        value: (p.portedText?.trim() || p.previewText?.trim()) ?? null,
+      }))
+      .filter((u) => u.value);
+
+    await applyBulkFieldUpdates(updates, "bulk:include");
+  }
+
+  async function excludeAllFields() {
+    const updates = clauseProposals
+      .filter((p) => Boolean(fieldByKey.get(p.sectionKey)?.value?.trim()))
+      .map((p) => ({ fieldKey: p.sectionKey, value: null }));
+
+    await applyBulkFieldUpdates(updates, "bulk:exclude");
+  }
 
   const emptyFields = useMemo(() => {
     if (!draft) return [];
@@ -214,65 +369,155 @@ export function LoiDraftEditor({ draftId }: { draftId: string }) {
   if (!draft) return null;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">{draft.title}</h1>
-          <p className="mt-1 text-sm text-muted">
-            LOI draft · {draft.completenessPct}% complete
-            {draft.precedentDocumentIds.length > 0 &&
-              ` · ${draft.precedentDocumentIds.length} precedent${draft.precedentDocumentIds.length === 1 ? "" : "s"}`}
-            {draft.content.templateFilename &&
-              ` · template from ${draft.content.templateFilename}`}
-          </p>
+    <div className="draft-editor-shell h-full min-h-0">
+      {hasPrecedents && (
+        <aside className="draft-side-panel">
+          <div className="border-b border-border px-4 py-3">
+            <h3 className="text-sm font-semibold">Section choices</h3>
+            <p className="mt-1 text-xs text-muted">
+              Toggle each field to pull precedent wording into the draft, or
+              leave it empty to write your own.
+            </p>
+            {clauseProposals.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="btn-xs btn-primary"
+                  disabled={
+                    bulkBusy ||
+                    loadingProposals ||
+                    adoptableProposals.length === 0 ||
+                    includedProposalCount >= adoptableProposals.length
+                  }
+                  onClick={() => void includeAllFields()}
+                >
+                  {savingKey === "bulk:include"
+                    ? "Including…"
+                    : "Include all"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-xs btn-secondary"
+                  disabled={
+                    bulkBusy ||
+                    loadingProposals ||
+                    includedProposalCount === 0
+                  }
+                  onClick={() => void excludeAllFields()}
+                >
+                  {savingKey === "bulk:exclude"
+                    ? "Excluding…"
+                    : "Exclude all"}
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            {loadingProposals && (
+              <p className="text-xs text-muted">Loading field options…</p>
+            )}
+            {!loadingProposals && clauseProposals.length === 0 && (
+              <p className="text-xs text-muted">
+                No precedent sections available for this template.
+              </p>
+            )}
+            {clauseProposals.map((proposal) => {
+              const field = fieldByKey.get(proposal.sectionKey);
+              const included = Boolean(field?.value?.trim());
+              const canAdopt = Boolean(
+                proposal.portedText?.trim() || proposal.previewText?.trim()
+              );
+              const busy =
+                savingKey === `adopt:${proposal.sectionKey}` ||
+                savingKey === `clear:${proposal.sectionKey}`;
+
+              return (
+                <div
+                  key={proposal.sectionKey}
+                  className={`dprec-card${included ? "" : " dprec-dropped"}`}
+                >
+                  <div className="dprec-top">
+                    <div className="dprec-t">{proposal.title}</div>
+                    <button
+                      type="button"
+                      className={`dprec-tgl${included ? " on" : ""}`}
+                      disabled={busy || bulkBusy || (!included && !canAdopt)}
+                      onClick={() => void toggleFieldInclusion(proposal)}
+                    >
+                      <span className="dprec-box" aria-hidden>
+                        {included ? "✓" : ""}
+                      </span>
+                      {included ? "Including" : "Excluded"}
+                    </button>
+                  </div>
+                  {proposal.sourceFilename && (
+                    <p className="dprec-src">
+                      from {proposal.sourceFilename}
+                      {proposal.fieldScore > 0 &&
+                        ` · ${Math.round(proposal.fieldScore * 100)}% fit`}
+                    </p>
+                  )}
+                  <p className="dprec-why">{proposal.why}</p>
+                  {proposal.previewText && (
+                    <p className="dprec-preview">"{proposal.previewText}"</p>
+                  )}
+                  {!canAdopt && (
+                    <p className="mt-1 text-[10px] text-muted">
+                      No precedent text — fill manually in the editor.
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </aside>
+      )}
+
+      <div className="draft-main-panel">
+        <div className="dtoolbar">
+          <div className="min-w-0 flex-1">
+            <span className="dt-title">{draft.title}</span>
+            <span className="dt-doctag">LOI</span>
+          </div>
+          <div className="hdr-prog" title={`${draft.completenessPct}% complete`}>
+            <div className="hdr-prog-track">
+              <div
+                className="hdr-prog-fill"
+                style={{ width: `${draft.completenessPct}%` }}
+              />
+            </div>
+            <span className="hdr-prog-pct">{draft.completenessPct}%</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <a
+              href={`/api/drafts/${draftId}/export?format=pdf`}
+              className="btn-primary"
+              download
+            >
+              Export PDF
+            </a>
+            <a
+              href={`/api/drafts/${draftId}/export?format=docx`}
+              className="btn-secondary"
+              download
+            >
+              Word
+            </a>
+            <Link href="/precedents" className="btn-secondary">
+              New search
+            </Link>
+          </div>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <a
-            href={`/api/drafts/${draftId}/export?format=pdf`}
-            className="btn-primary"
-            download
-          >
-            Export PDF
-          </a>
-          <a
-            href={`/api/drafts/${draftId}/export?format=docx`}
-            className="btn-secondary"
-            download
-          >
-            Export Word
-          </a>
-          <a
-            href={`/api/drafts/${draftId}/export?format=txt`}
-            className="btn-secondary"
-            download
-          >
-            Export text
-          </a>
-          <Link href="/precedents" className="btn-secondary">
-            New search
-          </Link>
-        </div>
-      </div>
 
-      <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-        <div
-          className="h-full rounded-full bg-primary transition-all"
-          style={{ width: `${draft.completenessPct}%` }}
-        />
-      </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
-
-      <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
-        <div className="card space-y-6">
-          <p className="text-xs text-muted">
-            Sections are ported from precedents and reconciled with your
-            proforma. PDF and Word export use the miniAviator house layout.
-            Edit document headers and section headings below — they appear in
-            the exported letterhead and as bold section titles.
+          <p className="mb-5 text-xs text-muted">
+            Skeleton template — choose sections from the panel on the left (when
+            precedents are linked), or edit each field directly below.
           </p>
 
-          <section className="rounded-lg border border-primary/20 bg-primary/5 p-4">
+          <section className="mb-6 rounded-lg border border-primary/20 bg-primary/5 p-4">
             <h2 className="mb-3 text-sm font-semibold text-slate-800">
               Document headers
             </h2>
@@ -446,41 +691,15 @@ export function LoiDraftEditor({ draftId }: { draftId: string }) {
               {savingKey === "add-field" ? "Adding…" : "+ Add section"}
             </button>
           </div>
-        </div>
 
-        <aside className="space-y-4">
-          <div className="card">
-            <h3 className="mb-2 text-sm font-semibold">Empty sections</h3>
-            {emptyFields.length === 0 ? (
-              <p className="text-sm text-emerald-700">
-                All sections filled. Export your LOI when ready.
-              </p>
-            ) : (
-              <ul className="space-y-1 text-sm text-muted">
-                {emptyFields.map((f) => (
-                  <li key={f.key}>· {f.label}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          {draft.assemblyLog.length > 0 && (
-            <div className="card">
-              <h3 className="mb-2 text-sm font-semibold">Assembly log</h3>
-              <ol className="space-y-2 text-xs text-muted">
-                {draft.assemblyLog.map((step, i) => (
-                  <li key={i}>
-                    <span className="font-medium text-slate-700">
-                      {step.step}
-                    </span>
-                    <br />
-                    {step.detail}
-                  </li>
-                ))}
-              </ol>
-            </div>
+          {emptyFields.length > 0 && !hasPrecedents && (
+            <p className="mt-6 text-sm text-muted">
+              {emptyFields.length} empty section
+              {emptyFields.length === 1 ? "" : "s"} — fill in below or export
+              when ready.
+            </p>
           )}
-        </aside>
+        </div>
       </div>
     </div>
   );

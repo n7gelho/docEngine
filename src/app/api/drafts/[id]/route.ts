@@ -176,6 +176,47 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       }
     }
 
+    const bulkFields = Array.isArray(body.bulkFields) ? body.bulkFields : null;
+    if (bulkFields && bulkFields.length > 0) {
+      for (const entry of bulkFields) {
+        if (!entry || typeof entry !== "object") continue;
+        const key =
+          typeof (entry as { fieldKey?: unknown }).fieldKey === "string"
+            ? (entry as { fieldKey: string }).fieldKey
+            : null;
+        if (!key) continue;
+
+        const entryValue =
+          (entry as { value?: unknown }).value === null ||
+          (entry as { value?: unknown }).value === undefined
+            ? null
+            : String((entry as { value: unknown }).value).trim() || null;
+
+        let found = false;
+        for (const section of content.sections) {
+          for (const field of section.fields) {
+            if (field.key === key) {
+              field.value = entryValue;
+              field.source = "user";
+              field.precedentDocumentId = null;
+              field.precedentFilename = null;
+              field.fieldScore = null;
+              found = true;
+              break;
+            }
+          }
+          if (found) break;
+        }
+        if (!found) {
+          return NextResponse.json(
+            { error: `Field not found: ${key}` },
+            { status: 404 }
+          );
+        }
+      }
+      updated = true;
+    }
+
     if (!updated) {
       return NextResponse.json(
         { error: "No supported fields to update" },

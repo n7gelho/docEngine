@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { initializeApp } from "@/lib/init";
-import { db } from "@/lib/db";
-import { loiDrafts } from "@/lib/db/schema";
-import { assembleLoiDraft } from "@/lib/generation/assemble-loi-draft";
+import { buildSectionPortProposals } from "@/lib/generation/assemble-loi-draft";
 import {
   briefFromUnknownInput,
   getFilledBriefKeys,
@@ -18,7 +16,7 @@ export async function POST(request: NextRequest) {
 
     if (getFilledBriefKeys(brief).length === 0) {
       return NextResponse.json(
-        { error: "Provide at least one proforma parameter to generate an LOI." },
+        { error: "Provide at least one proforma parameter." },
         { status: 400 }
       );
     }
@@ -44,46 +42,18 @@ export async function POST(request: NextRequest) {
           ) as Record<string, number>)
         : undefined;
 
-    const adoptedSectionKeys = Array.isArray(body.adoptedSectionKeys)
-      ? body.adoptedSectionKeys.filter(
-          (key: unknown): key is string =>
-            typeof key === "string" && key.length > 0
-        )
-      : undefined;
-
-    const assembled = await assembleLoiDraft({
+    const preview = await buildSectionPortProposals({
       brief,
       precedentDocumentIds,
       projectTitle,
       templateOnly,
       precedentMatchScores,
-      adoptedSectionKeys,
     });
 
-    const [draft] = await db
-      .insert(loiDrafts)
-      .values({
-        title: assembled.content.documentTitle,
-        brief,
-        precedentDocumentIds: templateOnly ? [] : precedentDocumentIds,
-        content: assembled.content,
-        assemblyLog: assembled.assemblyLog,
-        completenessPct: assembled.completenessPct,
-        status: assembled.completenessPct >= 100 ? "complete" : "drafting",
-      })
-      .returning();
-
-    return NextResponse.json({
-      draftId: draft.id,
-      title: draft.title,
-      completenessPct: assembled.completenessPct,
-      filledCount: assembled.filledCount,
-      totalCount: assembled.totalCount,
-      assemblyLog: assembled.assemblyLog,
-    });
+    return NextResponse.json(preview);
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "LOI assembly failed";
+      error instanceof Error ? error.message : "Section proposals failed";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

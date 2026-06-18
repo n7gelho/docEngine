@@ -123,6 +123,49 @@ export type AssembleLoiDraftInput = {
 
   precedentMatchScores?: Record<string, number>;
 
+  /** When set, only these section/field keys are ported from precedents. */
+
+  adoptedSectionKeys?: string[];
+
+};
+
+
+
+export type SectionPortProposal = {
+
+  sectionKey: string;
+
+  title: string;
+
+  sourceFilename: string | null;
+
+  sourceDocumentId: string | null;
+
+  fieldScore: number;
+
+  previewText: string;
+
+  /** Full reconciled text to write when user adopts this proposal. */
+  portedText?: string | null;
+
+  why: string;
+
+  recommended: boolean;
+
+};
+
+
+
+export type SectionPortPreviewResult = {
+
+  templateDocumentId: string | null;
+
+  templateFilename: string | null;
+
+  documentTitle: string;
+
+  proposals: SectionPortProposal[];
+
 };
 
 

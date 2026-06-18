@@ -669,7 +669,8 @@ export function PrecedentChatbot() {
       : getFilledBriefKeys(message.brief);
 
     return (
-      <div className="space-y-3">
+      <div className="ic-card">
+        <div className="ic-eyebrow">Proforma terms</div>
         <div className="flex flex-wrap gap-2">
           <span className="badge bg-violet-100 text-violet-800">
             Target: {message.targetDocumentType}
@@ -759,32 +760,30 @@ export function PrecedentChatbot() {
           </div>
         )}
         {isActive && (
-          <button
-            type="button"
-            className="btn-primary w-full sm:w-auto"
-            onClick={requestSearchFromReview}
-            disabled={loading || filledCount === 0}
-          >
-            {step === "done" || step === "searching"
-              ? `Search again (${message.targetDocumentType})`
-              : `Find top 3 ${message.targetDocumentType} precedents`}
-          </button>
+          <div className="ic-actions">
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={requestSearchFromReview}
+              disabled={loading || filledCount === 0}
+            >
+              {step === "done" || step === "searching"
+                ? `Search again (${message.targetDocumentType})`
+                : `Find top 3 ${message.targetDocumentType} precedents`}
+            </button>
+          </div>
         )}
       </div>
     );
   }
 
-  async function handleGenerateLoi(templateOnly: boolean) {
+  async function openDraftTemplate() {
     if (targetDocumentType !== "LOI") {
       setError("LOI generation is only available when preparing an LOI.");
       return;
     }
     if (filledCount === 0) {
       setError("Provide at least one parameter before generating.");
-      return;
-    }
-    if (!templateOnly && selectedPrecedentIds.size === 0) {
-      setError("Select at least one precedent, or use template only.");
       return;
     }
 
@@ -800,6 +799,8 @@ export function PrecedentChatbot() {
         )
       : {};
 
+    const hasPrecedents = selectedPrecedentIds.size > 0;
+
     setGenerating(true);
     setError(null);
     try {
@@ -808,9 +809,12 @@ export function PrecedentChatbot() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           parameters: brief,
-          precedentDocumentIds: Array.from(selectedPrecedentIds),
-          templateOnly,
-          precedentMatchScores,
+          precedentDocumentIds: hasPrecedents
+            ? Array.from(selectedPrecedentIds)
+            : [],
+          templateOnly: false,
+          precedentMatchScores: hasPrecedents ? precedentMatchScores : undefined,
+          adoptedSectionKeys: [],
         }),
       });
       const data = await response.json();
@@ -838,93 +842,97 @@ export function PrecedentChatbot() {
     const selectedCount = selectedPrecedentIds.size;
 
     return (
-      <div className="space-y-3">
+      <div className="ic-card">
+        <div className="ic-eyebrow">Precedent matches</div>
         <p className="font-serif text-sm font-medium text-foreground">
           Top {message.targetDocumentType} matches
         </p>
-        <ul className="space-y-3">
+        <ul className="mt-3 space-y-2">
           {message.results.map((result, index) => {
             const selected = selectedPrecedentIds.has(result.documentId);
             const dealSummary = formatPrecedentDealSummary(result);
             return (
-              <li
-                key={result.documentId}
-                className={`min-w-0 overflow-hidden rounded-lg border p-3 ${
-                  selected && isLoi
-                    ? "border-primary/35 bg-[var(--primary-wash)]"
-                    : "border-border bg-card"
-                }`}
-              >
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="flex min-w-0 flex-1 gap-2">
-                    {isLoi && (
-                      <input
-                        type="checkbox"
-                        className="mt-1 shrink-0"
-                        checked={selected}
-                        disabled={generating || loading}
-                        onChange={() =>
-                          togglePrecedentSelection(result.documentId)
+              <li key={result.documentId}>
+                <div
+                  role={isLoi ? "button" : undefined}
+                  tabIndex={isLoi ? 0 : undefined}
+                  className={`pp-card${selected && isLoi ? " selected" : ""}`}
+                  onClick={
+                    isLoi && !generating && !loading
+                      ? () => togglePrecedentSelection(result.documentId)
+                      : undefined
+                  }
+                  onKeyDown={
+                    isLoi && !generating && !loading
+                      ? (e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            togglePrecedentSelection(result.documentId);
+                          }
                         }
-                        aria-label={`Include ${result.filename} as precedent`}
-                      />
-                    )}
-                    <div className="min-w-0">
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted">
+                      : undefined
+                  }
+                >
+                  {isLoi && (
+                    <span className="pp-check" aria-hidden>
+                      {selected ? "✓" : ""}
+                    </span>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="pp-title">
+                      <Link
+                        href={`/documents/${result.documentId}`}
+                        className="hover:text-primary hover:underline"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {result.filename}
+                      </Link>
+                    </p>
+                    <p className="pp-meta">
                       #{index + 1}
-                      {isLoi && index === 0 && (
-                        <span className="ml-2 normal-case text-primary">
-                          · template donor
+                      {isLoi && index === 0 && " · template donor"}
+                      {result.dealType && ` · ${result.dealType}`}
+                      {" · "}
+                      {formatProcessedDate(result.processedAt)}
+                    </p>
+                    <p className="text-sm leading-relaxed text-[var(--ink-soft)]">
+                      {dealSummary}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      <span className="pp-tag match">
+                        {formatPercent(result.precedentScore)} match
+                      </span>
+                      {result.dealType && (
+                        <span className={dealTypeBadgeClass(result.dealType)}>
+                          {result.dealType}
                         </span>
                       )}
-                    </p>
-                    <Link
-                      href={`/documents/${result.documentId}`}
-                      className="font-medium text-primary hover:underline"
-                    >
-                      {result.filename}
-                    </Link>
                     </div>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {result.dealType && (
-                      <span className={dealTypeBadgeClass(result.dealType)}>
-                        {result.dealType}
-                      </span>
-                    )}
-                    <span className="badge bg-primary/15 text-primary">
-                      {formatPercent(result.precedentScore)} precedent
-                    </span>
+                    {renderPrecedentMatchDetails(result, brief)}
                   </div>
                 </div>
-                <p className="mt-2 break-words text-sm leading-relaxed text-[var(--ink-soft)]">
-                  {dealSummary}
-                </p>
-                {renderPrecedentMatchDetails(result, brief)}
               </li>
             );
           })}
         </ul>
         {isLoi && message.results.length > 0 && (
-          <div className="flex flex-wrap gap-2 border-t border-border pt-3">
+          <div className="ic-actions border-t border-border pt-3">
             <button
               type="button"
               className="btn-primary"
-              disabled={generating || loading || selectedCount === 0}
-              onClick={() => handleGenerateLoi(false)}
+              disabled={generating || loading}
+              onClick={() => void openDraftTemplate()}
             >
               {generating
-                ? "Assembling…"
-                : `Generate LOI from selected (${selectedCount})`}
+                ? "Opening draft…"
+                : selectedCount > 0
+                  ? `Open draft template (${selectedCount} precedent${selectedCount === 1 ? "" : "s"}) →`
+                  : "Open draft template →"}
             </button>
-            <button
-              type="button"
-              className="btn-secondary"
-              disabled={generating || loading}
-              onClick={() => handleGenerateLoi(true)}
-            >
-              Template only
-            </button>
+            <p className="w-full text-xs text-muted">
+              Opens a skeleton LOI — choose which sections to pull from precedents
+              on the next page.
+            </p>
           </div>
         )}
       </div>

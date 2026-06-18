@@ -27,6 +27,8 @@ import type {
   LoiDraftContent,
   LoiDraftField,
   LoiDraftSection,
+  SectionPortPreviewResult,
+  SectionPortProposal,
 } from "@/lib/generation/loi-draft-types";
 import { scoreFieldDonor, scoreSectionDonor } from "@/lib/retrieval/field-score";
 import {
@@ -63,6 +65,89 @@ type PrecedentSource = {
   suitabilityScore: number;
   precedentScore: number;
 };
+
+function isSectionAdopted(
+  sectionKey: string,
+  adoptedSectionKeys?: string[]
+): boolean {
+  if (adoptedSectionKeys === undefined) return true;
+  return adoptedSectionKeys.includes(sectionKey);
+}
+
+function proposalWhyText(
+  title: string,
+  briefKeys: DealParameterKey[],
+  brief: ProformaBrief,
+  fieldScore: number
+): string {
+  const filled = briefKeys.filter((key) => {
+    const value = brief[key];
+    return value !== null && value !== undefined && String(value).trim();
+  });
+  if (filled.length > 0) {
+    const labels = filled
+      .slice(0, 3)
+      .map((key) => key.replace(/_/g, " "))
+      .join(", ");
+    return `Best match for “${title}” — aligns with your proforma on ${labels}.`;
+  }
+  if (fieldScore >= 0.6) {
+    return `Strong precedent boilerplate for “${title}” from your selected LOI.`;
+  }
+  return `Suggested wording for “${title}” from the closest precedent section.`;
+}
+
+function truncatePreview(text: string, max = 220): string {
+  const trimmed = text.replace(/\s+/g, " ").trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, max).trim()}…`;
+}
+
+async function loadPrecedentSources(
+  input: AssembleLoiDraftInput
+): Promise<PrecedentSource[]> {
+  const ids = input.precedentDocumentIds ?? [];
+  if (ids.length === 0) return [];
+
+  const matchScoreMap = new Map(
+    Object.entries(input.precedentMatchScores ?? {})
+  );
+  const rows = await db
+    .select()
+    .from(documents)
+    .where(inArray(documents.id, ids));
+
+  const order = new Map(ids.map((id, index) => [id, index]));
+  return rows
+    .sort((a, b) => (order.get(a.id) ?? 999) - (order.get(b.id) ?? 999))
+    .map((row) =>
+      documentToPrecedentSource(
+        row,
+        matchScoreMap.get(row.id) ?? 0,
+        input.brief
+      )
+    );
+}
+
+function resolveTemplateDonor(
+  precedents: PrecedentSource[],
+  templateOnly: boolean
+): PrecedentSource | null {
+  if (templateOnly || precedents.length === 0) return null;
+
+  const templateDonorRow = pickTopByPrecedentScore(
+    precedents,
+    (p) => p.precedentScore
+  );
+  const donorWithSections = templateDonorRow
+    ? precedents.find((p) => p.id === templateDonorRow.id)
+    : precedents.find((p) => p.sections.length >= 3);
+
+  if (donorWithSections && donorWithSections.sections.length >= 2) {
+    return donorWithSections;
+  }
+  return null;
+}
 
 function documentToPrecedentSource(
   row: Document,
@@ -312,9 +397,14 @@ function resolveSectionField(
   templateOnly: boolean,
   templateDonorId?: string | null,
   usedDonorKeys?: Set<string>,
-  templateDonor?: PrecedentSource | null
+  templateDonor?: PrecedentSource | null,
+  adoptedSectionKeys?: string[]
 ): LoiDraftField {
-  if (templateOnly || precedents.length === 0) {
+  if (
+    templateOnly ||
+    precedents.length === 0 ||
+    !isSectionAdopted(templateSection.id, adoptedSectionKeys)
+  ) {
     return {
       key: templateSection.id,
       label: templateSection.title,
@@ -384,17 +474,25 @@ function buildFromMasterTemplate(
   brief: ProformaBrief,
   precedents: PrecedentSource[],
   templateOnly: boolean,
-  templateDonor?: PrecedentSource | null
+  templateDonor?: PrecedentSource | null,
+  adoptedSectionKeys?: string[]
 ): LoiDraftSection[] {
   return LOI_MASTER_TEMPLATE_SECTIONS.map((section) => ({
     id: section.id,
     title: section.title,
     fields: section.fields.map((fieldDef) => {
-      if (templateOnly || precedents.length === 0) {
+      if (
+        templateOnly ||
+        precedents.length === 0 ||
+        !isSectionAdopted(fieldDef.key, adoptedSectionKeys)
+      ) {
+        const skeleton =
+          adoptedSectionKeys !== undefined ||
+          (precedents.length === 0 && !templateOnly);
         return {
           key: fieldDef.key,
           label: fieldDef.label,
-          value: fieldDef.defaultValue ?? null,
+          value: skeleton ? null : (fieldDef.defaultValue ?? null),
           source: "template" as DraftFieldSource,
           precedentDocumentId: null,
           precedentFilename: null,
@@ -517,41 +615,166 @@ export function renderLoiDraftText(content: LoiDraftContent): string {
   return blocks.join("\n").trim();
 }
 
+export async function buildSectionPortProposals(
+  input: AssembleLoiDraftInput
+): Promise<SectionPortPreviewResult> {
+  const templateOnly = input.templateOnly ?? false;
+  const precedents = await loadPrecedentSources(input);
+  const fieldDonors =
+    !templateOnly && precedents.length > 0
+      ? filterEligibleFieldDonors(precedents, (p) => p.precedentScore)
+      : precedents;
+
+  const donorWithSections = resolveTemplateDonor(precedents, templateOnly);
+  const proposals: SectionPortProposal[] = [];
+
+  if (donorWithSections) {
+    const usedDonorKeys = new Set<string>();
+    for (const templateSection of donorWithSections.sections) {
+      const picked = pickBestSectionDonor(
+        templateSection,
+        fieldDonors,
+        input.brief,
+        donorWithSections.id,
+        usedDonorKeys
+      );
+      if (picked) usedDonorKeys.add(picked.donorKey);
+
+      let portedText: string | null = null;
+      if (picked) {
+        const precedentValues = precedentValuesForBriefKeys(
+          picked.precedent,
+          templateSection.briefKeys
+        );
+        const reconciled = reconcileBoilerplateWithProforma(
+          picked.text,
+          input.brief,
+          precedentValues,
+          reconcileExtrasForPrecedent(picked.precedent, donorWithSections)
+        );
+        portedText = reconciled.text;
+      }
+
+      proposals.push({
+        sectionKey: templateSection.id,
+        title: templateSection.title,
+        sourceFilename: picked?.precedent.filename ?? null,
+        sourceDocumentId: picked?.precedent.id ?? null,
+        fieldScore: picked?.fieldScore ?? 0,
+        previewText: picked ? truncatePreview(picked.text) : "",
+        portedText,
+        why: picked
+          ? proposalWhyText(
+              templateSection.title,
+              templateSection.briefKeys,
+              input.brief,
+              picked.fieldScore
+            )
+          : `No strong precedent section found for “${templateSection.title}”.`,
+        recommended: Boolean(picked && picked.fieldScore >= 0.45),
+      });
+    }
+  } else {
+    for (const section of LOI_MASTER_TEMPLATE_SECTIONS) {
+      for (const fieldDef of section.fields) {
+        let best: {
+          value: string;
+          precedent: PrecedentSource;
+          fieldScore: number;
+        } | null = null;
+
+        for (const precedent of fieldDonors) {
+          let docValue: string | number | null = null;
+          if (fieldDef.briefKey) {
+            docValue = precedent.parameters[fieldDef.briefKey]?.value ?? null;
+          } else if (fieldDef.key === "lessor") {
+            docValue = precedent.lessor;
+          } else if (fieldDef.key === "governing_law") {
+            docValue = precedent.governingLaw;
+          } else if (fieldDef.key === "jurisdiction") {
+            docValue = precedent.jurisdiction;
+          }
+
+          const boilerplate =
+            parameterValueAsString(docValue) ?? fieldDef.defaultValue ?? null;
+          if (!boilerplate) continue;
+
+          const { score, meetsThreshold } = scoreFieldDonor({
+            briefKey: fieldDef.briefKey,
+            brief: input.brief,
+            docValue,
+            sectionText: boilerplate,
+            metadata: precedent.metadata,
+            docMatchScore: precedent.matchScore,
+          });
+
+          if (!meetsThreshold) continue;
+          if (!best || score > best.fieldScore) {
+            best = { value: boilerplate, precedent, fieldScore: score };
+          }
+        }
+
+        const briefKeys = fieldDef.briefKey ? [fieldDef.briefKey] : [];
+        let portedText: string | null = null;
+        if (best) {
+          const precedentValues = precedentValuesForBriefKeys(
+            best.precedent,
+            briefKeys
+          );
+          const reconciled = reconcileBoilerplateWithProforma(
+            best.value,
+            input.brief,
+            precedentValues,
+            reconcileExtrasForPrecedent(best.precedent, null)
+          );
+          portedText = reconciled.text;
+        }
+
+        proposals.push({
+          sectionKey: fieldDef.key,
+          title: fieldDef.label,
+          sourceFilename: best?.precedent.filename ?? null,
+          sourceDocumentId: best?.precedent.id ?? null,
+          fieldScore: best?.fieldScore ?? 0,
+          previewText: best ? truncatePreview(best.value) : "",
+          portedText,
+          why: best
+            ? proposalWhyText(
+                fieldDef.label,
+                briefKeys,
+                input.brief,
+                best.fieldScore
+              )
+            : `No precedent value found for “${fieldDef.label}”.`,
+          recommended: Boolean(best && best.fieldScore >= 0.45),
+        });
+      }
+    }
+  }
+
+  return {
+    templateDocumentId: donorWithSections?.id ?? null,
+    templateFilename: donorWithSections?.filename ?? null,
+    documentTitle: buildProjectTitle(input.brief, input.projectTitle),
+    proposals,
+  };
+}
+
 export async function assembleLoiDraft(
   input: AssembleLoiDraftInput
 ): Promise<AssembleLoiDraftResult> {
   const templateOnly = input.templateOnly ?? false;
-  const ids = input.precedentDocumentIds ?? [];
+  const adoptedSectionKeys = input.adoptedSectionKeys;
   const assemblyLog: AssemblyLogStep[] = [];
-  const matchScoreMap = new Map(
-    Object.entries(input.precedentMatchScores ?? {})
-  );
 
-  let precedents: PrecedentSource[] = [];
-  if (ids.length > 0) {
-    const rows = await db
-      .select()
-      .from(documents)
-      .where(inArray(documents.id, ids));
-
-    const order = new Map(ids.map((id, index) => [id, index]));
-    precedents = rows
-      .sort((a, b) => (order.get(a.id) ?? 999) - (order.get(b.id) ?? 999))
-      .map((row) =>
-        documentToPrecedentSource(
-          row,
-          matchScoreMap.get(row.id) ?? 0,
-          input.brief
-        )
-      );
-  }
+  const precedents = await loadPrecedentSources(input);
 
   const fieldDonors =
     !templateOnly && precedents.length > 0
       ? filterEligibleFieldDonors(precedents, (p) => p.precedentScore)
       : precedents;
 
-  const templateDonor =
+  const templateDonorRow =
     !templateOnly && precedents.length > 0
       ? pickTopByPrecedentScore(precedents, (p) => p.precedentScore)
       : null;
@@ -566,13 +789,9 @@ export async function assembleLoiDraft(
   let templateDocumentId: string | null = null;
   let templateFilename: string | null = null;
 
-  const templateDonorRow = templateDonor;
+  const donorWithSections = resolveTemplateDonor(precedents, templateOnly);
 
-  const donorWithSections = templateDonorRow
-    ? precedents.find((p) => p.id === templateDonorRow.id)
-    : precedents.find((p) => p.sections.length >= 3);
-
-  if (donorWithSections && donorWithSections.sections.length >= 2) {
+  if (donorWithSections) {
     templateDocumentId = donorWithSections.id;
     templateFilename = donorWithSections.filename;
 
@@ -582,9 +801,13 @@ export async function assembleLoiDraft(
     });
 
     if (!templateOnly) {
+      const portDetail =
+        adoptedSectionKeys !== undefined
+          ? `${adoptedSectionKeys.length} section${adoptedSectionKeys.length === 1 ? "" : "s"} opted in for porting`
+          : `${fieldDonors.length} of ${precedents.length} selected LOI${precedents.length === 1 ? "" : "s"} used for field porting (within precedent-score threshold)`;
       assemblyLog.push({
         step: "Pulled relevant precedents",
-        detail: `${fieldDonors.length} of ${precedents.length} selected LOI${precedents.length === 1 ? "" : "s"} used for field porting (within precedent-score threshold)`,
+        detail: portDetail,
       });
     }
 
@@ -603,7 +826,8 @@ export async function assembleLoiDraft(
                 templateOnly,
                 donorWithSections.id,
                 usedDonorKeys,
-                donorWithSections
+                donorWithSections,
+                adoptedSectionKeys
               )
             );
           })()
@@ -643,7 +867,8 @@ export async function assembleLoiDraft(
       input.brief,
       fieldDonors,
       templateOnly,
-      templateDonorRow
+      templateDonorRow,
+      adoptedSectionKeys
     );
   }
 

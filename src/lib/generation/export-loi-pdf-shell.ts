@@ -11,6 +11,7 @@ import {
   allBodySegments,
   closingSegments,
   draftHasFullContent,
+  draftHasUserEdits,
   preambleSegments,
 } from "@/lib/generation/export-loi-shared";
 import { sanitizeForPdfLib } from "@/lib/generation/export-loi-normalize";
@@ -386,6 +387,7 @@ export async function exportLoiPdfWithTemplateShell(
 export function canUseTemplatePdfShell(
   input: ExportDocumentInput
 ): input is ExportDocumentInput & { templatePdfBuffer: Buffer } {
+  if (draftHasUserEdits(input.content)) return false;
   if (draftHasFullContent(input)) return false;
   return (
     !!input.templatePdfBuffer &&

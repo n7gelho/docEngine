@@ -6,17 +6,13 @@ import type { ExportDocumentInput } from "@/lib/generation/export-loi-shared";
 
 import {
   buildMergedExportSegments,
-  canUseTemplatePreserveExport,
+  canUseHousePdfExport,
   canUseTemplateSubstituteExport,
   type ExportContentSegment,
 } from "@/lib/generation/export-loi-shared";
 import { buildTemplateSubstitutions } from "@/lib/generation/export-loi-substitutions";
 import { exportLoiPdfSubstituteOnTemplate } from "@/lib/generation/export-loi-pdf-substitute";
-import {
-  canUseTemplatePdfShell,
-  exportLoiPdfWithTemplateShell,
-} from "@/lib/generation/export-loi-pdf-shell";
-import { exportLoiPdfPreserveTemplate } from "@/lib/generation/export-loi-pdf-preserve";
+import { exportLoiPdfHouse } from "@/lib/generation/export-loi-pdf-house";
 
 
 
@@ -66,11 +62,27 @@ function renderTable(
   const tableWidth = doc.page.width - MARGIN * 2;
   const colWidth = tableWidth / colCount;
   const startX = MARGIN;
-  const rowHeight = BODY_SIZE + TABLE_CELL_PADDING * 2 + 6;
+  const cellInnerWidth = colWidth - TABLE_CELL_PADDING * 2;
   let y = doc.y + 8;
 
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
     const row = rows[rowIndex];
+    const headerFont = rowIndex === 0 ? "Times-Bold" : "Times-Roman";
+    doc.font(headerFont).fontSize(BODY_SIZE);
+
+    let rowHeight = BODY_SIZE + TABLE_CELL_PADDING * 2 + 6;
+    for (let col = 0; col < colCount; col++) {
+      const cell = row[col] ?? "";
+      const cellHeight =
+        doc.heightOfString(cell, {
+          width: cellInnerWidth,
+          lineGap: 2,
+        }) +
+        TABLE_CELL_PADDING * 2 +
+        4;
+      rowHeight = Math.max(rowHeight, cellHeight);
+    }
+
     if (y + rowHeight > doc.page.height - MARGIN) {
       doc.addPage();
       y = MARGIN;
@@ -100,7 +112,7 @@ function renderTable(
         .fontSize(BODY_SIZE)
         .fillColor("#000000")
         .text(row[col] ?? "", x + TABLE_CELL_PADDING, y + TABLE_CELL_PADDING, {
-          width: colWidth - TABLE_CELL_PADDING * 2,
+          width: cellInnerWidth,
           lineGap: 2,
         });
     }
@@ -172,11 +184,7 @@ async function exportLoiAsPdfKit(
 
 
 
-    const footerLabel = input.templateFilename
-
-      ? `Template: ${input.templateFilename}`
-
-      : "miniAviator LOI draft";
+    const footerLabel = "miniAviator LOI";
 
 
 
@@ -228,8 +236,7 @@ async function exportLoiAsPdfKit(
 
 export type LoiPdfExportStrategy =
   | "template-substitute"
-  | "template-preserve"
-  | "template-shell"
+  | "house"
   | "regenerate";
 
 export type LoiPdfExportResult = {
@@ -259,27 +266,15 @@ export async function exportLoiAsPdf(
     }
   }
 
-  if (canUseTemplatePreserveExport(input)) {
+  if (canUseHousePdfExport(input)) {
     try {
-      const buffer = await exportLoiPdfPreserveTemplate(
-        input,
-        input.templatePdfBuffer
+      const buffer = await exportLoiPdfHouse(input);
+      return { buffer, strategy: "house" };
+    } catch (error) {
+      console.warn(
+        "[export-loi-pdf] house template failed:",
+        error instanceof Error ? error.message : error
       );
-      return { buffer, strategy: "template-preserve" };
-    } catch {
-      // Fall back when template preserve merge fails.
-    }
-  }
-
-  if (canUseTemplatePdfShell(input)) {
-    try {
-      const buffer = await exportLoiPdfWithTemplateShell(
-        input,
-        input.templatePdfBuffer
-      );
-      return { buffer, strategy: "template-shell" };
-    } catch {
-      // Fall back to PDFKit when template shell merge fails.
     }
   }
 

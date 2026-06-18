@@ -1,7 +1,11 @@
 import type { LoiDraftContent } from "@/lib/generation/loi-draft-types";
-import type { ProformaBrief } from "@/lib/retrieval/proforma-brief";
 import type { Document } from "@/lib/db/schema";
-import { getFilledBriefKeys } from "@/lib/retrieval/proforma-brief";
+import {
+  DEAL_PARAMETER_LABELS,
+  getFilledBriefKeys,
+  normalizeBriefValue,
+  type ProformaBrief,
+} from "@/lib/retrieval/proforma-brief";
 import {
   blockOverlapsBlock,
   blockOverlapsPreamble,
@@ -312,12 +316,35 @@ export function safeExportBasename(content: LoiDraftContent): string {
     .slice(0, 80);
 }
 
+/** Lines that look like headings but are letter-opening noise in LOI exports. */
+function isHeadingFalsePositive(line: string): boolean {
+  const trimmed = line.trim();
+  if (/^re:\s/i.test(trimmed)) return true;
+  if (/^letter of intent$/i.test(trimmed)) return true;
+  if (/^confidential$/i.test(trimmed)) return true;
+  if (/^dear\s+/i.test(trimmed)) return true;
+  if (/^(?:dated?|date:)\s/i.test(trimmed)) return true;
+  if (/^attention:/i.test(trimmed)) return true;
+  if (/^\d{1,2}\s+[A-Za-z]+\s+\d{4}$/.test(trimmed)) return true;
+  if (
+    /\b(?:limited|ltd\.?|llc|inc\.?|corp\.?|plc|gmbh|airways|airlines)\b/i.test(
+      trimmed
+    ) &&
+    !/^\d+(?:\.\d+)*\.?\s+/i.test(trimmed)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export function isHeadingLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed || trimmed.length >= 120) return false;
   if (isPageMarkerLine(trimmed)) return false;
   if (isGenericSectionLabel(trimmed)) return false;
+  if (isHeadingFalsePositive(trimmed)) return false;
   if (/^(?:appendix|schedule|annex|part)\s+/i.test(trimmed)) return true;
+  if (/^\d+(?:\.\d+)*\.?\s+\S/.test(trimmed)) return true;
   return (
     trimmed.length < 90 &&
     /^[A-Z0-9][A-Za-z0-9\s\-/&().,'"]{2,}$/.test(trimmed) &&
@@ -325,45 +352,61 @@ export function isHeadingLine(line: string): boolean {
   );
 }
 
+function contentOpensWithSectionHeading(lines: string[]): boolean {
+  const first = lines[0]?.trim() ?? "";
+  if (!first) return false;
+  if (/^\d+(?:\.\d+)*\.?\s+\S/.test(first)) return true;
+  return isHeadingLine(first);
+}
+
+function shouldSkipInjectedLabel(label: string): boolean {
+  const trimmed = label.trim();
+  return isGenericSectionLabel(trimmed) || /^preamble$/i.test(trimmed);
+}
+
+/** Preamble is flowing letter text — no bold heading detection. */
+export function parsePreambleIntoSegments(text: string): ExportContentSegment[] {
+  const paragraphs = normalizeExportText(text)
+    .split("\n")
+    .filter((line) => !/^letter of intent$/i.test(line.trim()))
+    .join("\n")
+    .split(/\n{2,}/)
+    .map((chunk) => chunk.replace(/\n/g, " ").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  return paragraphs.map((paragraph) => ({ kind: "paragraph", text: paragraph }));
+}
+
 export function blockToSegments(
   block: { key?: string; label: string; text: string }
 ): ExportContentSegment[] {
   const text = normalizeExportText(block.text);
   const label = block.label.trim();
-
-  if (fieldTextIncludesHeading({ label, text })) {
-    const lines = splitTextIntoLines(text);
-    const segments: ExportContentSegment[] = [];
-    if (lines.length > 0) {
-      segments.push({ kind: "heading", text: lines[0] });
-      const remainder = lines.slice(1).join("\n");
-      segments.push(...parseBlockIntoSegments(remainder));
-    }
-    return segments;
-  }
-
-  const segments: ExportContentSegment[] = [];
   const lines = splitTextIntoLines(text);
 
-  if (isGenericSectionLabel(label)) {
+  if (fieldTextIncludesHeading({ label, text }) || contentOpensWithSectionHeading(lines)) {
+    const segments: ExportContentSegment[] = [];
     if (lines.length > 0 && isHeadingLine(lines[0])) {
       segments.push({ kind: "heading", text: lines[0] });
       segments.push(...parseBlockIntoSegments(lines.slice(1).join("\n")));
       return segments;
     }
-    segments.push(...parseBlockIntoSegments(text));
-    return segments;
+    if (lines.length > 0 && /^\d+(?:\.\d+)*\.?\s+\S/.test(lines[0])) {
+      segments.push({ kind: "heading", text: lines[0] });
+      segments.push(...parseBlockIntoSegments(lines.slice(1).join("\n")));
+      return segments;
+    }
+    return parseBlockIntoSegments(text);
   }
 
-  if (lines.length > 0 && isHeadingLine(lines[0]) && normalizeLine(lines[0]) === normalizeLine(label)) {
-    segments.push({ kind: "heading", text: lines[0] });
-    segments.push(...parseBlockIntoSegments(lines.slice(1).join("\n")));
-    return segments;
+  if (shouldSkipInjectedLabel(label)) {
+    return parseBlockIntoSegments(text);
   }
 
-  segments.push({ kind: "heading", text: label });
-  segments.push(...parseBlockIntoSegments(text));
-  return segments;
+  return [
+    { kind: "heading", text: label },
+    ...parseBlockIntoSegments(text),
+  ];
 }
 
 export function allBodySegments(
@@ -381,7 +424,7 @@ export function preambleSegments(
 ): ExportContentSegment[] {
   const preamble = resolvePreambleForExport(input);
   if (!preamble) return [];
-  return parseBlockIntoSegments(preamble);
+  return parsePreambleIntoSegments(preamble);
 }
 
 export function closingSegments(
@@ -476,10 +519,36 @@ export function draftStructurallyDivergedFromTemplate(
   return hits / Math.max(steps, 1) < 0.3;
 }
 
+/** True when the user has manually edited at least one section in the draft editor. */
+export function draftHasUserEdits(content: LoiDraftContent): boolean {
+  for (const section of content.sections) {
+    for (const field of section.fields) {
+      if (field.source === "user" && field.value?.trim()) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 export function canUseTemplatePreserveExport(
   input: ExportDocumentInput
 ): input is ExportDocumentInput & { templatePdfBuffer: Buffer } {
+  if (draftHasUserEdits(input.content)) return false;
   if (draftStructurallyDivergedFromTemplate(input)) return false;
+  return (
+    !!input.content.templateDocumentId &&
+    !!input.templatePdfBuffer &&
+    input.templatePdfBuffer.length > 0 &&
+    (input.templateMimeType === "application/pdf" ||
+      input.templateFilename?.toLowerCase().endsWith(".pdf") === true)
+  );
+}
+
+export function canUseEditedDraftPdfExport(
+  input: ExportDocumentInput
+): input is ExportDocumentInput & { templatePdfBuffer: Buffer } {
+  if (!draftHasUserEdits(input.content)) return false;
   return (
     !!input.content.templateDocumentId &&
     !!input.templatePdfBuffer &&
@@ -496,6 +565,8 @@ export function canUseTemplateSubstituteExport(
   templateDoc: TemplateDocContext;
   brief: ProformaBrief;
 } {
+  if (draftHasUserEdits(input.content)) return false;
+  if (draftStructurallyDivergedFromTemplate(input)) return false;
   if (!input.brief || getFilledBriefKeys(input.brief).length === 0) return false;
   if (!input.templateDoc?.fullText?.trim()) return false;
   return (
@@ -505,4 +576,78 @@ export function canUseTemplateSubstituteExport(
     (input.templateMimeType === "application/pdf" ||
       input.templateFilename?.toLowerCase().endsWith(".pdf") === true)
   );
+}
+
+export type DealSummaryRow = { label: string; value: string };
+
+function summaryValue(
+  briefValue: string | number | null | undefined,
+  templateValue: string | number | null | undefined
+): string | null {
+  return (
+    normalizeBriefValue(briefValue) ?? normalizeBriefValue(templateValue)
+  );
+}
+
+/** Key deal terms for the house-template summary box (brief overrides template). */
+export function buildDealSummaryRows(
+  input: ExportDocumentInput
+): DealSummaryRow[] {
+  const brief = input.brief;
+  const doc = input.templateDoc;
+  const rows: DealSummaryRow[] = [];
+
+  const push = (label: string, value: string | null) => {
+    if (value) rows.push({ label, value });
+  };
+
+  const dealType = doc?.dealType?.toLowerCase() ?? "";
+  const isPurchase = dealType.includes("purchase") || dealType.includes("sale");
+
+  if (isPurchase) {
+    push("Seller", summaryValue(undefined, doc?.seller));
+    push("Buyer", summaryValue(brief?.counterparty, doc?.buyer));
+  } else {
+    push("Lessor", summaryValue(undefined, doc?.lessor));
+    push("Lessee", summaryValue(brief?.counterparty, doc?.lessee));
+  }
+
+  push("Aircraft", summaryValue(brief?.aircraft, doc?.aircraftType));
+  push(
+    DEAL_PARAMETER_LABELS.aircraft_count,
+    summaryValue(brief?.aircraft_count, doc?.aircraftCount)
+  );
+  push(
+    DEAL_PARAMETER_LABELS.transaction_type,
+    summaryValue(brief?.transaction_type, doc?.leaseType)
+  );
+  push(DEAL_PARAMETER_LABELS.lease_term, summaryValue(brief?.lease_term, doc?.term));
+  push(
+    DEAL_PARAMETER_LABELS.monthly_rent,
+    summaryValue(
+      brief?.monthly_rent,
+      doc?.monthlyRent && doc?.currency
+        ? `${doc.currency} ${doc.monthlyRent}`
+        : doc?.monthlyRent
+    )
+  );
+  push(
+    DEAL_PARAMETER_LABELS.security_deposit,
+    summaryValue(brief?.security_deposit, doc?.securityDeposit)
+  );
+  push(
+    DEAL_PARAMETER_LABELS.expected_delivery,
+    summaryValue(brief?.expected_delivery, doc?.expectedDelivery)
+  );
+  push(
+    "Governing law",
+    summaryValue(brief?.governingLaw, doc?.governingLaw)
+  );
+
+  return rows;
+}
+
+/** Default PDF export uses the owned house layout (no precedent PDF overlay). */
+export function canUseHousePdfExport(input: ExportDocumentInput): boolean {
+  return collectExportFieldBlocks(input.content).length > 0;
 }

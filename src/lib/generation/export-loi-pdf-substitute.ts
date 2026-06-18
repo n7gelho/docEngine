@@ -3,28 +3,59 @@ import type { ReconcileSubstitution } from "@/lib/generation/proforma-reconcile"
 import { findTextBoxesInPdf } from "@/lib/generation/pdf-text-positions";
 import { sanitizeForPdfLib } from "@/lib/generation/export-loi-normalize";
 import { filterInPlaceSubstitutions } from "@/lib/generation/export-loi-substitutions";
+import {
+  pdfLineHeight,
+  wrapTextToWidth,
+} from "@/lib/generation/pdf-text-wrap";
 
 const PAD_X = 2;
-const PAD_Y = 1;
+const PAD_Y = 2;
 const MIN_FONT_SIZE = 6.5;
+const PAGE_RIGHT_MARGIN = 36;
+const MAX_EXTRA_MASK_WIDTH = 96;
 
-function fitFontSize(
-  text: string,
+function fitFontSizeForLines(
+  lines: string[],
   font: PDFFont,
   targetWidth: number,
   baseSize: number
 ): number {
   let size = baseSize;
-  while (size > MIN_FONT_SIZE && font.widthOfTextAtSize(text, size) > targetWidth) {
+  while (size > MIN_FONT_SIZE) {
+    const fits = lines.every(
+      (line) => font.widthOfTextAtSize(line, size) <= targetWidth
+    );
+    if (fits) return size;
     size -= 0.25;
   }
-  return size;
+  return MIN_FONT_SIZE;
 }
 
-function maskWidth(boxWidth: number, replacement: string, original: string): number {
+function maskWidth(
+  boxWidth: number,
+  pageWidth: number,
+  boxX: number,
+  replacement: string,
+  original: string
+): number {
   const growth = replacement.length / Math.max(original.length, 1);
-  const extra = Math.min(72, Math.max(12, boxWidth * (growth - 1) * 0.65));
-  return boxWidth + PAD_X * 2 + extra;
+  const extra = Math.min(
+    MAX_EXTRA_MASK_WIDTH,
+    Math.max(12, boxWidth * (growth - 1) * 0.65)
+  );
+  const desired = boxWidth + PAD_X * 2 + extra;
+  const maxAllowed = Math.max(boxWidth, pageWidth - boxX - PAGE_RIGHT_MARGIN);
+  return Math.min(desired, maxAllowed);
+}
+
+function wrapReplacement(
+  text: string,
+  font: PDFFont,
+  fontSize: number,
+  maxWidth: number
+): string[] {
+  const lines = wrapTextToWidth(text, font, fontSize, maxWidth);
+  return lines.length > 0 ? lines : [text];
 }
 
 /**
@@ -60,30 +91,47 @@ export async function exportLoiPdfSubstituteOnTemplate(
 
       const replacement = sanitizeForPdfLib(sub.to);
       const font = /^\$|USD|rent|deposit/i.test(replacement) ? bold : regular;
-      const maskW = maskWidth(box.width, replacement, sub.from);
-      const fontSize = fitFontSize(
+      const pageWidth = page.getWidth();
+      const textWidth = maskWidth(
+        box.width,
+        pageWidth,
+        box.x,
         replacement,
-        font,
-        maskW - PAD_X * 2,
-        Math.min(box.fontSize, 12)
-      );
+        sub.from
+      ) - PAD_X * 2;
+      const baseSize = Math.min(box.fontSize, 12);
+
+      let fontSize = baseSize;
+      let lines = wrapReplacement(replacement, font, fontSize, textWidth);
+      fontSize = fitFontSizeForLines(lines, font, textWidth, baseSize);
+      lines = wrapReplacement(replacement, font, fontSize, textWidth);
+
+      const lineHeight = pdfLineHeight(fontSize, 1);
+      const textBlockHeight =
+        (lines.length - 1) * lineHeight + fontSize + PAD_Y;
+      const maskH = Math.max(box.height + PAD_Y * 2, textBlockHeight + PAD_Y);
+      const maskW = textWidth + PAD_X * 2;
 
       page.drawRectangle({
         x: box.x - PAD_X,
         y: box.y - PAD_Y,
         width: maskW,
-        height: box.height + PAD_Y * 2,
+        height: maskH,
         color: rgb(1, 1, 1),
         borderWidth: 0,
       });
 
-      page.drawText(replacement, {
-        x: box.x,
-        y: box.y,
-        size: fontSize,
-        font,
-        color: rgb(0, 0, 0),
-      });
+      let drawY = box.y + (lines.length - 1) * lineHeight;
+      for (const line of lines) {
+        page.drawText(line, {
+          x: box.x,
+          y: drawY,
+          size: fontSize,
+          font,
+          color: rgb(0, 0, 0),
+        });
+        drawY -= lineHeight;
+      }
       applied++;
     }
   }

@@ -11,12 +11,14 @@ export function normalizeExportText(text: string): string {
     .trim();
 }
 
-/** Strip embedded PDF page markers like "LOI – Emirate Skyways3". */
+/** Strip embedded PDF page markers like "LOI – Emirate Skyways3" or "LOI Fake 1". */
 export function isPageMarkerLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
   if (/^LOI\s*[–—-]\s*.+\d+\s*$/i.test(trimmed)) return true;
   if (/^LOI\s*[–—-]\s*.+\s+\d+\s*$/i.test(trimmed)) return true;
+  if (/^LOI\s+\S+(?:\s+\S+)*\s+\d+\s*$/i.test(trimmed)) return true;
+  if (/^LOI\s+Fake\s*\d+\s*$/i.test(trimmed)) return true;
   if (/^Page\s+\d+\s+of\s+\d+$/i.test(trimmed)) return true;
   return false;
 }

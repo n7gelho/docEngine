@@ -1,4 +1,5 @@
 import type { DealParameterKey } from "@/lib/extraction/deal-parameters";
+import { parseMonthlyRentAmount } from "@/lib/extraction/deal-parameters";
 import {
   DEAL_PARAMETER_LABELS,
   getProformaGoverningLaw,
@@ -37,16 +38,45 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const AMOUNT_PARAMETER_KEYS = new Set<DealParameterKey>([
+  "monthly_rent",
+  "security_deposit",
+]);
+
+function sortPairsLongestFirst(pairs: ReplacementPair[]): ReplacementPair[] {
+  return [...pairs].sort(
+    (a, b) => b.from.trim().length - a.from.trim().length
+  );
+}
+
+function isSafeAmountReplacement(from: string): boolean {
+  const trimmed = from.trim();
+  if (trimmed.length < 4) return false;
+  if (/^\d{1,2}$/.test(trimmed)) return false;
+  if (/[\$,]/.test(trimmed)) return true;
+  if (/\d{3,}/.test(trimmed)) return true;
+  return parseMonthlyRentAmount(trimmed) !== null;
+}
+
 function replaceAllInsensitive(
   text: string,
   from: string,
-  to: string
+  to: string,
+  options?: { amountKey?: boolean }
 ): { text: string; count: number } {
   if (!from.trim() || from.trim() === to.trim()) {
     return { text, count: 0 };
   }
 
-  const pattern = new RegExp(escapeRegExp(from.trim()), "gi");
+  if (options?.amountKey && !isSafeAmountReplacement(from)) {
+    return { text, count: 0 };
+  }
+
+  const escaped = escapeRegExp(from.trim());
+  const pattern = options?.amountKey
+    ? new RegExp(`(?<![\\d,])${escaped}(?![\\d,])`, "gi")
+    : new RegExp(escaped, "gi");
+
   let count = 0;
   const next = text.replace(pattern, () => {
     count++;
@@ -62,11 +92,13 @@ function applyReplacementPairs(
   substitutions: ReconcileSubstitution[]
 ): string {
   let next = text;
-  for (const pair of pairs) {
+  const amountKey = AMOUNT_PARAMETER_KEYS.has(meta.key as DealParameterKey);
+  for (const pair of sortPairsLongestFirst(pairs)) {
     const { text: updated, count } = replaceAllInsensitive(
       next,
       pair.from,
-      pair.to
+      pair.to,
+      { amountKey }
     );
     if (count > 0) {
       next = updated;

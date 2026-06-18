@@ -127,7 +127,7 @@ function renderPrecedentMatchDetails(
   const ageYears = recencyAgeYears(result.processedAt);
 
   return (
-    <details className="group mt-2">
+    <details className="group mt-2 min-w-0">
       <summary className="cursor-pointer list-none text-xs font-medium text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
         <span className="inline-flex items-center gap-1">
           <span
@@ -139,13 +139,13 @@ function renderPrecedentMatchDetails(
           Match details
         </span>
       </summary>
-      <div className="mt-2 space-y-3 border-t border-border pt-2 text-xs">
+      <div className="mt-2 min-w-0 space-y-3 overflow-hidden border-t border-border pt-2 text-xs">
         <div>
           <p className="font-medium text-foreground">Scores</p>
           <dl className="mt-1 grid gap-1 text-muted">
-            <div className="flex justify-between gap-4">
-              <dt>Parameter match</dt>
-              <dd className="font-medium text-foreground">
+            <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5">
+              <dt className="shrink-0">Parameter match</dt>
+              <dd className="min-w-0 text-right font-medium text-foreground">
                 {formatPercent(result.matchScore)}
                 {result.comparedParameters > 0 && (
                   <span className="font-normal text-muted">
@@ -156,15 +156,15 @@ function renderPrecedentMatchDetails(
                 )}
               </dd>
             </div>
-            <div className="flex justify-between gap-4">
-              <dt>Suitability</dt>
-              <dd className="font-medium text-foreground">
+            <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5">
+              <dt className="shrink-0">Suitability</dt>
+              <dd className="min-w-0 text-right font-medium text-foreground">
                 {formatPercent(result.suitabilityScore)}
               </dd>
             </div>
-            <div className="flex justify-between gap-4">
-              <dt>Precedent (combined)</dt>
-              <dd className="font-medium text-foreground">
+            <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5">
+              <dt className="shrink-0">Precedent (combined)</dt>
+              <dd className="min-w-0 text-right font-medium text-foreground">
                 {formatPercent(result.precedentScore)}
               </dd>
             </div>
@@ -177,12 +177,12 @@ function renderPrecedentMatchDetails(
             <div>
               <dt className="font-medium text-foreground/80">Governing law</dt>
               {proformaLaw ? (
-                <dd className="mt-1 space-y-0.5">
-                  <p>
+                <dd className="mt-1 space-y-0.5 break-words">
+                  <p className="break-words">
                     <span className="text-muted">Your proforma:</span>{" "}
                     {proformaLaw}
                   </p>
-                  <p>
+                  <p className="break-words">
                     <span className="text-muted">Precedent:</span>{" "}
                     {result.governingLaw?.trim() || "—"}
                   </p>
@@ -194,14 +194,14 @@ function renderPrecedentMatchDetails(
                   </p>
                 </dd>
               ) : (
-                <dd className="mt-1">
+                <dd className="mt-1 break-words">
                   Not in your proforma — suitability uses recency only.
                 </dd>
               )}
             </div>
             <div>
               <dt className="font-medium text-foreground/80">Recency</dt>
-              <dd className="mt-1 space-y-0.5">
+              <dd className="mt-1 space-y-0.5 break-words">
                 <p>
                   <span className="text-muted">Processed:</span>{" "}
                   {formatProcessedDate(result.processedAt)}
@@ -224,15 +224,15 @@ function renderPrecedentMatchDetails(
         </div>
 
         {result.parameterMatches.length > 0 && (
-          <div>
+          <div className="min-w-0">
             <p className="font-medium text-foreground">Parameter comparison</p>
-            <ul className="mt-1 space-y-1.5">
+            <ul className="mt-1 space-y-2">
               {result.parameterMatches.map((match) => (
                 <li
                   key={match.key}
-                  className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5"
+                  className="min-w-0 space-y-0.5 border-b border-border/60 pb-2 last:border-0 last:pb-0"
                 >
-                  <span className="min-w-0 text-muted">
+                  <p className="text-muted">
                     <span
                       className={
                         match.matched
@@ -244,15 +244,17 @@ function renderPrecedentMatchDetails(
                       {match.matched ? "✓" : "·"}
                     </span>{" "}
                     {match.label}
-                  </span>
-                  <span className="shrink-0 text-right text-foreground/90">
-                    <span className="text-muted">{match.briefValue}</span>
-                    {" → "}
-                    {match.documentValue ?? "—"}
                     <span className="ml-1 text-muted">
                       ({formatPercent(match.score)})
                     </span>
-                  </span>
+                  </p>
+                  <p className="break-words pl-3 text-foreground/90">
+                    <span className="text-muted">Yours:</span> {match.briefValue}
+                  </p>
+                  <p className="break-words pl-3 text-foreground/90">
+                    <span className="text-muted">Precedent:</span>{" "}
+                    {match.documentValue ?? "—"}
+                  </p>
                 </li>
               ))}
             </ul>
@@ -847,7 +849,7 @@ export function PrecedentChatbot() {
             return (
               <li
                 key={result.documentId}
-                className={`rounded-lg border p-3 ${
+                className={`min-w-0 overflow-hidden rounded-lg border p-3 ${
                   selected && isLoi
                     ? "border-primary/35 bg-[var(--primary-wash)]"
                     : "border-border bg-card"
@@ -895,7 +897,7 @@ export function PrecedentChatbot() {
                     </span>
                   </div>
                 </div>
-                <p className="mt-2 text-sm leading-relaxed text-[var(--ink-soft)]">
+                <p className="mt-2 break-words text-sm leading-relaxed text-[var(--ink-soft)]">
                   {dealSummary}
                 </p>
                 {renderPrecedentMatchDetails(result, brief)}

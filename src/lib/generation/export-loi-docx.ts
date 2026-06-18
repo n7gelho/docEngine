@@ -13,7 +13,10 @@ import {
 } from "docx";
 import type { ExportDocumentInput } from "@/lib/generation/export-loi-shared";
 import type { ExportContentSegment } from "@/lib/generation/export-loi-shared";
-import { buildMergedExportSegments } from "@/lib/generation/export-loi-shared";
+import {
+  buildDealSummaryRows,
+  buildMergedExportSegments,
+} from "@/lib/generation/export-loi-shared";
 
 const BODY_FONT = "Times New Roman";
 const BODY_SIZE = 22;
@@ -47,6 +50,103 @@ function headingParagraph(text: string) {
         size: BODY_SIZE,
         bold: true,
       }),
+    ],
+  });
+}
+
+function titleParagraph(text: string) {
+  return new Paragraph({
+    alignment: AlignmentType.CENTER,
+    spacing: { after: 80 },
+    children: [
+      new TextRun({
+        text,
+        font: BODY_FONT,
+        size: TITLE_SIZE,
+        bold: true,
+      }),
+    ],
+  });
+}
+
+function subtitleParagraph(text: string) {
+  return new Paragraph({
+    alignment: AlignmentType.CENTER,
+    spacing: { after: 200 },
+    children: [
+      new TextRun({
+        text,
+        font: BODY_FONT,
+        size: BODY_SIZE,
+        color: "444444",
+      }),
+    ],
+  });
+}
+
+function summaryTable(rows: Array<{ label: string; value: string }>): Table {
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: [
+      new TableRow({
+        children: [
+          new TableCell({
+            columnSpan: 2,
+            shading: { fill: "F7F7FA" },
+            margins: { top: 100, bottom: 100, left: 140, right: 140 },
+            children: [
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: "Deal summary",
+                    font: BODY_FONT,
+                    size: BODY_SIZE,
+                    bold: true,
+                  }),
+                ],
+              }),
+            ],
+          }),
+        ],
+      }),
+      ...rows.map(
+        (row) =>
+          new TableRow({
+            children: [
+              new TableCell({
+                width: { size: 34, type: WidthType.PERCENTAGE },
+                margins: { top: 80, bottom: 80, left: 120, right: 80 },
+                children: [
+                  new Paragraph({
+                    children: [
+                      new TextRun({
+                        text: row.label,
+                        font: BODY_FONT,
+                        size: BODY_SIZE,
+                        bold: true,
+                      }),
+                    ],
+                  }),
+                ],
+              }),
+              new TableCell({
+                width: { size: 66, type: WidthType.PERCENTAGE },
+                margins: { top: 80, bottom: 80, left: 80, right: 120 },
+                children: [
+                  new Paragraph({
+                    children: [
+                      new TextRun({
+                        text: row.value,
+                        font: BODY_FONT,
+                        size: BODY_SIZE,
+                      }),
+                    ],
+                  }),
+                ],
+              }),
+            ],
+          })
+      ),
     ],
   });
 }
@@ -107,13 +207,28 @@ export async function exportLoiAsDocx(
 ): Promise<Buffer> {
   const children: Array<Paragraph | Table> = [];
 
+  children.push(titleParagraph("LETTER OF INTENT"));
+
+  const docTitle =
+    input.content.documentTitle?.trim() ||
+    input.templateFilename?.replace(/\.[^.]+$/, "");
+  if (docTitle) {
+    children.push(subtitleParagraph(docTitle));
+  }
+
+  const summaryRows = buildDealSummaryRows(input);
+  if (summaryRows.length > 0) {
+    children.push(summaryTable(summaryRows));
+    children.push(
+      new Paragraph({ spacing: { after: 200 }, children: [] })
+    );
+  }
+
   for (const segment of buildMergedExportSegments(input)) {
     children.push(...segmentToBlocks(segment));
   }
 
-  const footerText = input.templateFilename
-    ? `Template: ${input.templateFilename}`
-    : "miniAviator LOI draft";
+  const footerText = "miniAviator LOI";
 
   const doc = new Document({
     sections: [

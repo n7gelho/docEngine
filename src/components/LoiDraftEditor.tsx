@@ -162,9 +162,10 @@ export function LoiDraftEditor({ draftId }: { draftId: string }) {
         <div className="card space-y-6">
           <p className="text-xs text-muted">
             Sections are ported from precedents and reconciled with your
-            proforma. Export as PDF or Word — layout follows your template
-            precedent (letterhead + section structure); empty sections are
-            omitted.
+            proforma. PDF and Word export use the miniAviator house layout —
+            clean typography, deal summary, and bordered tables — so your edits
+            always appear reliably. Unedited drafts with only proforma swaps may
+            still use the original precedent PDF where possible.
           </p>
           {draft.content.sections.map((section) => (
             <section key={section.id}>

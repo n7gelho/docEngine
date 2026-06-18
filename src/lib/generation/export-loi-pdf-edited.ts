@@ -18,11 +18,10 @@ import { wrapTextToWidth } from "@/lib/generation/pdf-text-wrap";
 const MARGIN_X = 72;
 const MARGIN_BOTTOM = 72;
 const LETTERHEAD_HEIGHT = 100;
-const RUNNING_HEADER_HEIGHT = 40;
 const FONT_SIZE = 11;
 const HEADING_SIZE = 12;
 const LINE_GAP = 4;
-const TABLE_ROW_GAP = 2;
+const FOOTER_SIZE = 9;
 
 type LayoutState = {
   page: PDFPage;
@@ -31,12 +30,12 @@ type LayoutState = {
   cursorY: number;
 };
 
-type PreserveContext = {
+type EditedContext = {
   output: PDFDocument;
   template: PDFDocument;
-  templatePages: PDFPage[];
+  templatePage: PDFPage;
   fonts: { regular: PDFFont; bold: PDFFont };
-  nextPageIndex: number;
+  pageSize: { width: number; height: number };
 };
 
 function lineHeight(size: number): number {
@@ -56,63 +55,85 @@ function wrapText(
   return wrapTextToWidth(sanitizeForPdfLib(text), font, fontSize, maxWidth);
 }
 
-function maskBodyArea(
-  page: PDFPage,
-  width: number,
-  height: number,
-  topReserved: number,
-  fullPage = false
-) {
-  const maskHeight = fullPage
-    ? height - topReserved - MARGIN_BOTTOM
-    : height - topReserved - MARGIN_BOTTOM;
-  if (maskHeight <= 0) return;
-  page.drawRectangle({
-    x: fullPage ? 0 : MARGIN_X,
-    y: MARGIN_BOTTOM,
-    width: fullPage ? width : width - MARGIN_X * 2,
-    height: maskHeight,
-    color: rgb(1, 1, 1),
-    borderWidth: 0,
-  });
+async function createEditedContext(
+  templatePdfBuffer: Buffer
+): Promise<EditedContext> {
+  const template = await PDFDocument.load(templatePdfBuffer);
+  const output = await PDFDocument.create();
+  const templatePage = template.getPages()[0];
+  if (!templatePage) {
+    throw new Error("Template PDF has no pages");
+  }
+
+  const { width, height } = templatePage.getSize();
+  const regular = await output.embedFont(StandardFonts.TimesRoman);
+  const bold = await output.embedFont(StandardFonts.TimesRomanBold);
+
+  return {
+    output,
+    template,
+    templatePage,
+    fonts: { regular, bold },
+    pageSize: { width, height },
+  };
 }
 
-async function addPreservePage(ctx: PreserveContext): Promise<LayoutState> {
-  const templateIndex = Math.min(
-    ctx.nextPageIndex,
-    ctx.templatePages.length - 1
-  );
-  const templatePage = ctx.templatePages[templateIndex];
-  const { width, height } = templatePage.getSize();
-  const isFirstOutputPage = ctx.nextPageIndex === 0;
-  const topReserved = isFirstOutputPage
-    ? LETTERHEAD_HEIGHT
-    : RUNNING_HEADER_HEIGHT;
-
+/** Page 1: template letterhead only; body zone is blank for redraw. */
+async function addFirstPage(ctx: EditedContext): Promise<LayoutState> {
+  const { width, height } = ctx.pageSize;
   const page = ctx.output.addPage([width, height]);
-  const embedded = await ctx.output.embedPage(templatePage);
+  const embedded = await ctx.output.embedPage(ctx.templatePage);
   page.drawPage(embedded, { x: 0, y: 0, width, height });
-  maskBodyArea(page, width, height, topReserved, isFirstOutputPage);
 
-  ctx.nextPageIndex += 1;
+  const maskTop = height - LETTERHEAD_HEIGHT;
+  if (maskTop > MARGIN_BOTTOM) {
+    page.drawRectangle({
+      x: 0,
+      y: MARGIN_BOTTOM,
+      width,
+      height: maskTop - MARGIN_BOTTOM,
+      color: rgb(1, 1, 1),
+      borderWidth: 0,
+    });
+  }
 
   return {
     page,
     pageWidth: width,
     pageHeight: height,
-    cursorY: height - topReserved,
+    cursorY: height - LETTERHEAD_HEIGHT,
+  };
+}
+
+function addContinuationPage(ctx: EditedContext): LayoutState {
+  const { width, height } = ctx.pageSize;
+  const page = ctx.output.addPage([width, height]);
+  page.drawRectangle({
+    x: 0,
+    y: 0,
+    width,
+    height,
+    color: rgb(1, 1, 1),
+    borderWidth: 0,
+  });
+
+  return {
+    page,
+    pageWidth: width,
+    pageHeight: height,
+    cursorY: height - MARGIN_X,
   };
 }
 
 async function ensureSpace(
   state: LayoutState,
   needed: number,
-  ctx: PreserveContext
+  ctx: EditedContext
 ): Promise<LayoutState> {
   if (state.cursorY - needed >= MARGIN_BOTTOM) {
     return state;
   }
-  return addPreservePage(ctx);
+  return addContinuationPage(ctx);
 }
 
 async function drawLines(
@@ -120,7 +141,7 @@ async function drawLines(
   lines: string[],
   font: PDFFont,
   fontSize: number,
-  ctx: PreserveContext
+  ctx: EditedContext
 ): Promise<LayoutState> {
   let current = state;
   const height = lineHeight(fontSize);
@@ -145,7 +166,7 @@ async function drawParagraph(
   text: string,
   font: PDFFont,
   fontSize: number,
-  ctx: PreserveContext
+  ctx: EditedContext
 ): Promise<LayoutState> {
   const lines = wrapText(text, font, fontSize, maxTextWidth(state.pageWidth));
   return drawLines(state, lines, font, fontSize, ctx);
@@ -155,26 +176,21 @@ async function drawTable(
   state: LayoutState,
   rows: string[][],
   font: PDFFont,
-  ctx: PreserveContext
+  ctx: EditedContext
 ): Promise<LayoutState> {
   if (rows.length === 0) return state;
 
   const tableWidth = maxTextWidth(state.pageWidth);
-  const needed =
-    measureTableBlockHeight(
-      rows.map((row) => row.map((cell) => sanitizeForPdfLib(cell))),
-      tableWidth,
-      font,
-      FONT_SIZE
-    ) + 8;
+  const sanitized = rows.map((row) => row.map((cell) => sanitizeForPdfLib(cell)));
+  const needed = measureTableBlockHeight(sanitized, tableWidth, font, FONT_SIZE) + 8;
   let current = await ensureSpace(state, needed, ctx);
   const tableHeight = drawBorderedPdfTable(
     current.page,
-    rows.map((row) => row.map((cell) => sanitizeForPdfLib(cell))),
+    sanitized,
     {
       x: MARGIN_X,
       y: current.cursorY,
-      width: maxTextWidth(current.pageWidth),
+      width: tableWidth,
     },
     font,
     { fontSize: FONT_SIZE, headerRow: true }
@@ -186,7 +202,7 @@ async function drawSegment(
   state: LayoutState,
   segment: ExportContentSegment,
   fonts: { regular: PDFFont; bold: PDFFont },
-  ctx: PreserveContext
+  ctx: EditedContext
 ): Promise<LayoutState> {
   switch (segment.kind) {
     case "heading": {
@@ -207,52 +223,50 @@ async function drawSegment(
   }
 }
 
-async function drawSegments(
-  state: LayoutState,
-  segments: ExportContentSegment[],
-  fonts: { regular: PDFFont; bold: PDFFont },
-  ctx: PreserveContext
-): Promise<LayoutState> {
-  let current = state;
-  for (const segment of segments) {
-    current = await drawSegment(current, segment, fonts, ctx);
-    if (segment.kind === "paragraph") {
-      current = { ...current, cursorY: current.cursorY - 4 };
-    }
-  }
-  return current;
+function drawFooters(
+  output: PDFDocument,
+  templateFilename: string | null | undefined,
+  font: PDFFont
+) {
+  const pages = output.getPages();
+  const label = templateFilename
+    ? `Template: ${templateFilename}`
+    : "miniAviator LOI draft";
+
+  pages.forEach((page, index) => {
+    const { width } = page.getSize();
+    const text = `${label}  ·  Page ${index + 1} of ${pages.length}`;
+    const textWidth = font.widthOfTextAtSize(text, FOOTER_SIZE);
+    page.drawText(text, {
+      x: (width - textWidth) / 2,
+      y: 36,
+      size: FOOTER_SIZE,
+      font,
+      color: rgb(0.4, 0.4, 0.4),
+    });
+  });
 }
 
 /**
- * Export using template donor PDF pages as visual backgrounds.
- * Template letterhead/headers stay visible; body text is masked and redrawn once.
+ * Export user-edited drafts: template letterhead on page 1, clean body redraw
+ * on opaque pages (no ghost text from the template PDF).
  */
-export async function exportLoiPdfPreserveTemplate(
+export async function exportLoiPdfEditedDraft(
   input: ExportDocumentInput,
   templatePdfBuffer: Buffer
 ): Promise<Buffer> {
-  const template = await PDFDocument.load(templatePdfBuffer);
-  const templatePages = template.getPages();
-  if (templatePages.length === 0) {
-    throw new Error("Template PDF has no pages");
+  const ctx = await createEditedContext(templatePdfBuffer);
+  let state = await addFirstPage(ctx);
+  const segments = buildMergedExportSegments(input);
+
+  for (const segment of segments) {
+    state = await drawSegment(state, segment, ctx.fonts, ctx);
+    if (segment.kind === "paragraph") {
+      state = { ...state, cursorY: state.cursorY - 4 };
+    }
   }
 
-  const output = await PDFDocument.create();
-  const regular = await output.embedFont(StandardFonts.TimesRoman);
-  const bold = await output.embedFont(StandardFonts.TimesRomanBold);
-
-  const ctx: PreserveContext = {
-    output,
-    template,
-    templatePages,
-    fonts: { regular, bold },
-    nextPageIndex: 0,
-  };
-
-  let state = await addPreservePage(ctx);
-  const segments = buildMergedExportSegments(input);
-  await drawSegments(state, segments, ctx.fonts, ctx);
-
-  const bytes = await output.save();
+  drawFooters(ctx.output, input.templateFilename, ctx.fonts.regular);
+  const bytes = await ctx.output.save();
   return Buffer.from(bytes);
 }

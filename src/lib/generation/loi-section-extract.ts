@@ -1,4 +1,5 @@
 import type { DealParameterKey } from "@/lib/extraction/deal-parameters";
+import { isValidLoiSectionTitle } from "@/lib/generation/export-loi-normalize";
 import { splitTextIntoSections } from "@/lib/extraction/select-extraction-pages";
 
 export type ExtractedLoiSection = {
@@ -80,25 +81,126 @@ function inferBriefKeys(title: string, bodyText: string): DealParameterKey[] {
   return Array.from(keys);
 }
 
+const INFERRED_SECTION_RULES: Array<{
+  test: (opening: string, firstLine: string) => boolean;
+  title: string;
+}> = [
+  {
+    test: (_o, first) => /^(?:appendix|schedule|annex)\s+/i.test(first),
+    title: "", // use first line as title
+  },
+  {
+    test: (opening) => isTransactionPartiesOpening(opening),
+    title: "Transaction parties",
+  },
+  {
+    test: (opening) => /conditions precedent|effectiveness/i.test(opening),
+    title: "Conditions precedent",
+  },
+  {
+    test: (opening) => /governing law|jurisdiction/i.test(opening),
+    title: "Governing law and jurisdiction",
+  },
+  {
+    test: (opening, first) =>
+      /^security deposit$/i.test(first) || /security deposit/i.test(opening.slice(0, 280)),
+    title: "Security deposit",
+  },
+  {
+    test: (opening, first) =>
+      /^rent$/i.test(first) ||
+      (/\brent\b/i.test(opening.slice(0, 200)) && /monthly|advance/i.test(opening)),
+    title: "Rent",
+  },
+  {
+    test: (opening, first) =>
+      /^maintenance payments?$/i.test(first) || /maintenance payments/i.test(opening.slice(0, 320)),
+    title: "Maintenance payments",
+  },
+  {
+    test: (opening, first) =>
+      /^insurance$/i.test(first) || /^insurance\b/i.test(opening.slice(0, 120)),
+    title: "Insurance",
+  },
+  {
+    test: (opening) => /redelivery conditions|redelivery location/i.test(opening),
+    title: "Redelivery",
+  },
+  {
+    test: (opening, first) =>
+      /^aircraft\b/i.test(first) ||
+      (/airframe/i.test(opening) && /engines?/i.test(opening) && /msn/i.test(opening)),
+    title: "Aircraft and delivery",
+  },
+  {
+    test: (opening) => /lease term|lease period|\b\d+\s+months\b/i.test(opening.slice(0, 200)),
+    title: "Lease term",
+  },
+  {
+    test: (opening) => /inspection and delivery|delivery inspection/i.test(opening),
+    title: "Inspection and delivery",
+  },
+  {
+    test: (opening) => /validity of terms|valid for acceptance/i.test(opening),
+    title: "Validity of terms",
+  },
+];
+
+function openingSample(bodyText: string): { opening: string; firstLine: string } {
+  const lines = bodyText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const firstLine = lines[0] ?? "";
+  const opening = lines.slice(0, 8).join("\n").slice(0, 600);
+  return { opening, firstLine };
+}
+
+function isTransactionPartiesOpening(opening: string): boolean {
+  const lines = opening.split("\n").map((line) => line.trim()).filter(Boolean);
+  const hasLessor = lines.some((line) => isPartyLabelLine(line, "lessor"));
+  const hasLessee = lines.some((line) => isPartyLabelLine(line, "lessee"));
+  return hasLessor && hasLessee;
+}
+
+function isPartyLabelLine(line: string, party: "lessor" | "lessee"): boolean {
+  const re =
+    party === "lessor"
+      ? /^lessor\s*(?:[.:]\s*)?$/i
+      : /^lessee\s*(?:[.:]\s*)?$/i;
+  return re.test(line.trim());
+}
+
+function inferSectionTitle(bodyText: string, index: number): string {
+  const { opening, firstLine } = openingSample(bodyText);
+
+  if (/^(?:appendix|schedule|annex)\s+/i.test(firstLine)) {
+    return firstLine.slice(0, 100);
+  }
+
+  for (const rule of INFERRED_SECTION_RULES) {
+    if (!rule.title) continue;
+    if (rule.test(opening, firstLine)) return rule.title;
+  }
+
+  return `Section ${index + 1}`;
+}
+
+/** Infer a semantic section title from opening lines when extraction picked a bad heading. */
+export function inferLoiSectionTitle(bodyText: string, index = 0): string {
+  return inferSectionTitle(bodyText, index);
+}
+
 function parseSectionBlock(text: string, index: number): ExtractedLoiSection | null {
   const trimmed = text.trim();
   if (trimmed.length < 40) return null;
 
   const lines = trimmed.split("\n");
   const firstLine = lines[0]?.trim() ?? "";
-  const headingPattern =
-    /^(?:\d+(?:\.\d+)*\.?\s+)?[A-Z][A-Za-z0-9\s\-\/&(),.'"]{2,}$/;
-  const isHeading =
-    firstLine.length > 0 &&
-    firstLine.length < 120 &&
-    (headingPattern.test(firstLine) ||
-      /^TRANSACTION PARTIES$/i.test(firstLine) ||
-      /^LETTER OF INTENT$/i.test(firstLine) ||
-      /^SCHEDULE\s+\d+/i.test(firstLine));
-
-  const title = isHeading ? firstLine : `Section ${index + 1}`;
-  const bodyText = isHeading ? lines.slice(1).join("\n").trim() : trimmed;
-  const fullText = isHeading ? trimmed : `${title}\n\n${bodyText}`;
+  const firstLineIsTitle = isValidLoiSectionTitle(firstLine);
+  const title = firstLineIsTitle ? firstLine : inferSectionTitle(trimmed, index);
+  const bodyText = firstLineIsTitle ? lines.slice(1).join("\n").trim() : trimmed;
+  const fullText = firstLineIsTitle ? trimmed : `${title}\n\n${bodyText}`;
 
   return {
     id: slugify(title, index),
@@ -173,9 +275,6 @@ export function extractTemplatePreamble(
   return preamble?.fullText.trim() ?? null;
 }
 
-const LOI_HEADING_LINE =
-  /^(?:(?:\d+(?:\.\d+)*[.)]?\s+)|(?:\d+\)\s+)|(?:(?:CLAUSE|ARTICLE|SCHEDULE|PART)\s+(?:\d+|[IVXLC]+)[.:]?\s+)|(?:(?:I{1,3}|IV|VI{0,3}|IX|X{1,3})\.\s+))?(?:[A-Z][A-Z0-9\s\-\/&(),.'"]{3,}|[A-Z][a-z]+(?:\s+[A-Za-z]+){1,10})$/;
-
 const CLOSING_BLOCK_START =
   /^(?:yours?\s+(?:faithfully|sincerely)|sincerely|respectfully|for\s+and\s+on\s+behalf|signed(?:\s+by)?|signature|executed\s+(?:as\s+a\s+)?deed|in\s+witness\s+whereof|acknowledged\s+and\s+accepted|authorised\s+signatory|authorized\s+signatory)/i;
 
@@ -225,18 +324,8 @@ function stripClosingFromText(fullText: string): string {
 }
 
 function isLikelyHeadingLine(trimmed: string, bodyLen: number): boolean {
-  if (!trimmed || trimmed.length >= 120) return false;
-  if (LOI_HEADING_LINE.test(trimmed)) return bodyLen > 60;
-  if (
-    /^[A-Z][A-Z0-9\s\-\/&(),.'"]{4,}$/.test(trimmed) &&
-    trimmed.split(/\s+/).length <= 10
-  ) {
-    return bodyLen > 80;
-  }
-  if (/^(?:SCHEDULE|ANNEX|APPENDIX)\s+[A-Z0-9]+/i.test(trimmed)) {
-    return bodyLen > 40;
-  }
-  return false;
+  if (bodyLen < 40) return false;
+  return isValidLoiSectionTitle(trimmed);
 }
 
 /** LOI-specific heading split before generic window fallback. */

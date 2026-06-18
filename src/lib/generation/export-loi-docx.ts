@@ -16,6 +16,7 @@ import type { ExportContentSegment } from "@/lib/generation/export-loi-shared";
 import {
   buildDealSummaryRows,
   buildMergedExportSegments,
+  resolveExportFooterLabel,
 } from "@/lib/generation/export-loi-shared";
 
 const BODY_FONT = "Times New Roman";
@@ -43,6 +44,20 @@ function bodyParagraph(
 function headingParagraph(text: string) {
   return new Paragraph({
     spacing: { before: 220, after: 100 },
+    children: [
+      new TextRun({
+        text,
+        font: BODY_FONT,
+        size: BODY_SIZE,
+        bold: true,
+      }),
+    ],
+  });
+}
+
+function subheadingParagraph(text: string) {
+  return new Paragraph({
+    spacing: { before: 160, after: 80 },
     children: [
       new TextRun({
         text,
@@ -193,6 +208,8 @@ function segmentToBlocks(
   switch (segment.kind) {
     case "heading":
       return [headingParagraph(segment.text)];
+    case "subheading":
+      return [subheadingParagraph(segment.text)];
     case "paragraph":
       return [bodyParagraph(segment.text)];
     case "table":
@@ -228,7 +245,7 @@ export async function exportLoiAsDocx(
     children.push(...segmentToBlocks(segment));
   }
 
-  const footerText = "miniAviator LOI";
+  const footerText = resolveExportFooterLabel(input);
 
   const doc = new Document({
     sections: [

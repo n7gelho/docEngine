@@ -10,11 +10,17 @@ import {
   blockOverlapsBlock,
   blockOverlapsPreamble,
   compactText,
+  extractMashedScheduleRows,
   isGenericSectionLabel,
+  isLoiSubheadingLine,
   isPageMarkerLine,
+  isScheduleHeaderFragment,
+  isValidLoiSectionTitle,
   normalizeExportText,
+  tryParseMashedBoeingScheduleRow,
   tryParseScheduleRow,
 } from "@/lib/generation/export-loi-normalize";
+import { inferLoiSectionTitle } from "@/lib/generation/loi-section-extract";
 
 export type TemplateDocContext = Pick<
   Document,
@@ -44,6 +50,7 @@ export type ExportFieldBlock = {
 
 export type ExportContentSegment =
   | { kind: "heading"; text: string }
+  | { kind: "subheading"; text: string }
   | { kind: "paragraph"; text: string }
   | { kind: "table"; rows: string[][] };
 
@@ -100,7 +107,7 @@ export function fieldTextIncludesHeading(field: {
   if (!firstLine || !label) return false;
 
   if (isGenericSectionLabel(label)) {
-    return isHeadingLine(firstLine) && !/^section\s+\d+$/i.test(firstLine);
+    return isValidLoiSectionTitle(firstLine) && !/^section\s+\d+$/i.test(firstLine);
   }
 
   const a = normalizeLine(firstLine);
@@ -156,7 +163,130 @@ function isTableSeparatorRow(line: string): boolean {
   return /^[\|\s\-–—:+]+$/.test(trimmed) && /-{2,}/.test(trimmed);
 }
 
-/** Split block text into headings, paragraphs, and detected tables. */
+/** Split block text into paragraphs, subheadings, and tables (no inline main headings). */
+export function parseBlockBodyIntoSegments(text: string): ExportContentSegment[] {
+  const lines = normalizeExportText(text).split("\n");
+  const segments: ExportContentSegment[] = [];
+  let tableRows: string[][] = [];
+  let paragraphLines: string[] = [];
+  let pendingScheduleRows: string[][] = [];
+
+  function flushScheduleTable() {
+    if (pendingScheduleRows.length === 0) return;
+    segments.push({
+      kind: "table",
+      rows: [
+        ["Airframe", "Engines", "MSN", "Delivery Quarter", "Scheduled Delivery"],
+        ...pendingScheduleRows,
+      ],
+    });
+    pendingScheduleRows = [];
+  }
+
+  function flushParagraph() {
+    const joined = paragraphLines.join("\n").trim();
+    paragraphLines = [];
+    if (!joined) return;
+
+    const mashedSchedule = extractMashedScheduleRows(joined);
+    if (mashedSchedule && mashedSchedule.length > 1) {
+      const prefix = joined.split(/Boeing\s+\d{3}-\d+/i)[0]?.trim();
+      if (
+        prefix &&
+        prefix.length > 20 &&
+        !/^airframe\b/i.test(prefix) &&
+        !isScheduleHeaderOnlyText(prefix)
+      ) {
+        segments.push({
+          kind: "paragraph",
+          text: prefix.replace(/\s+/g, " ").trim(),
+        });
+      }
+      flushScheduleTable();
+      segments.push({ kind: "table", rows: mashedSchedule });
+      return;
+    }
+
+    for (const chunk of splitTextIntoParagraphs(joined)) {
+      const inlineSchedule = extractMashedScheduleRows(chunk);
+      if (inlineSchedule && inlineSchedule.length > 1) {
+        const prefix = chunk.split(/Boeing\s+\d{3}-\d+/i)[0]?.trim();
+        if (prefix && prefix.length > 10 && !isScheduleHeaderOnlyText(prefix)) {
+          segments.push({ kind: "paragraph", text: prefix.replace(/\s+/g, " ").trim() });
+        }
+        flushScheduleTable();
+        segments.push({ kind: "table", rows: inlineSchedule });
+      } else {
+        segments.push({ kind: "paragraph", text: chunk });
+      }
+    }
+  }
+
+  function flushTable() {
+    if (tableRows.length === 0) return;
+    flushScheduleTable();
+    segments.push({ kind: "table", rows: tableRows });
+    tableRows = [];
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line.trim() || isPageMarkerLine(line)) {
+      flushTable();
+      flushParagraph();
+      flushScheduleTable();
+      continue;
+    }
+
+    if (isTableSeparatorRow(line)) continue;
+
+    if (isScheduleHeaderFragment(line)) {
+      continue;
+    }
+
+    const scheduleRow = tryParseMashedBoeingScheduleRow(line);
+    if (scheduleRow) {
+      flushParagraph();
+      flushTable();
+      pendingScheduleRows.push(scheduleRow);
+      continue;
+    }
+
+    if (isTableRow(line)) {
+      flushParagraph();
+      flushScheduleTable();
+      tableRows.push(parseTableRow(line));
+      continue;
+    }
+
+    if (isLoiSubheadingLine(line)) {
+      flushTable();
+      flushParagraph();
+      flushScheduleTable();
+      segments.push({ kind: "subheading", text: line.trim() });
+      continue;
+    }
+
+    flushTable();
+    paragraphLines.push(line);
+  }
+
+  flushTable();
+  flushParagraph();
+  flushScheduleTable();
+  return segments;
+}
+
+function isScheduleHeaderOnlyText(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return true;
+  return (
+    /^airframe\s+engines?\s+msn/i.test(normalized) &&
+    !/\b(?:shall|the|lessee|lessor|aircraft)\b/i.test(normalized)
+  );
+}
+
+/** @deprecated Prefer parseBlockBodyIntoSegments for section bodies. */
 export function parseBlockIntoSegments(text: string): ExportContentSegment[] {
   const lines = normalizeExportText(text).split("\n");
   const segments: ExportContentSegment[] = [];
@@ -316,47 +446,74 @@ export function safeExportBasename(content: LoiDraftContent): string {
     .slice(0, 80);
 }
 
-/** Lines that look like headings but are letter-opening noise in LOI exports. */
-function isHeadingFalsePositive(line: string): boolean {
-  const trimmed = line.trim();
-  if (/^re:\s/i.test(trimmed)) return true;
-  if (/^letter of intent$/i.test(trimmed)) return true;
-  if (/^confidential$/i.test(trimmed)) return true;
-  if (/^dear\s+/i.test(trimmed)) return true;
-  if (/^(?:dated?|date:)\s/i.test(trimmed)) return true;
-  if (/^attention:/i.test(trimmed)) return true;
-  if (/^\d{1,2}\s+[A-Za-z]+\s+\d{4}$/.test(trimmed)) return true;
-  if (
-    /\b(?:limited|ltd\.?|llc|inc\.?|corp\.?|plc|gmbh|airways|airlines)\b/i.test(
-      trimmed
-    ) &&
-    !/^\d+(?:\.\d+)*\.?\s+/i.test(trimmed)
-  ) {
-    return true;
-  }
-  return false;
-}
-
+/** @deprecated Use isValidLoiSectionTitle from export-loi-normalize. */
 export function isHeadingLine(line: string): boolean {
-  const trimmed = line.trim();
-  if (!trimmed || trimmed.length >= 120) return false;
-  if (isPageMarkerLine(trimmed)) return false;
-  if (isGenericSectionLabel(trimmed)) return false;
-  if (isHeadingFalsePositive(trimmed)) return false;
-  if (/^(?:appendix|schedule|annex|part)\s+/i.test(trimmed)) return true;
-  if (/^\d+(?:\.\d+)*\.?\s+\S/.test(trimmed)) return true;
-  return (
-    trimmed.length < 90 &&
-    /^[A-Z0-9][A-Za-z0-9\s\-/&().,'"]{2,}$/.test(trimmed) &&
-    trimmed.split(/\s+/).length <= 12
-  );
+  return isValidLoiSectionTitle(line);
 }
 
-function contentOpensWithSectionHeading(lines: string[]): boolean {
-  const first = lines[0]?.trim() ?? "";
-  if (!first) return false;
-  if (/^\d+(?:\.\d+)*\.?\s+\S/.test(first)) return true;
-  return isHeadingLine(first);
+function stripLeadingDuplicateTitle(text: string, title: string): string {
+  const lines = splitTextIntoLines(text);
+  if (lines.length === 0) return text;
+  if (normalizeLine(lines[0]) === normalizeLine(title)) {
+    return lines.slice(1).join("\n");
+  }
+  return text;
+}
+
+function resolveSectionHeading(
+  label: string,
+  lines: string[]
+): { heading: string | null; bodyText: string } {
+  const text = lines.join("\n");
+  const firstLine = lines[0]?.trim() ?? "";
+  const labelValid =
+    isValidLoiSectionTitle(label) && !shouldSkipInjectedLabel(label);
+  const firstValid = isValidLoiSectionTitle(firstLine);
+
+  if (firstValid && fieldTextIncludesHeading({ label, text: text })) {
+    return { heading: firstLine, bodyText: lines.slice(1).join("\n") };
+  }
+
+  if (firstValid && !labelValid) {
+    return { heading: firstLine, bodyText: lines.slice(1).join("\n") };
+  }
+
+  if (labelValid) {
+    return {
+      heading: label,
+      bodyText: stripLeadingDuplicateTitle(text, label),
+    };
+  }
+
+  if (firstValid) {
+    return { heading: firstLine, bodyText: lines.slice(1).join("\n") };
+  }
+
+  const inferred = inferLoiSectionTitle(text, 0);
+  if (
+    isValidLoiSectionTitle(inferred) &&
+    !isGenericSectionLabel(inferred) &&
+    inferred !== "Transaction parties"
+  ) {
+    return { heading: inferred, bodyText: text };
+  }
+
+  if (isTransactionPartiesHeadingCandidate(lines)) {
+    return { heading: "Transaction parties", bodyText: text };
+  }
+
+  return { heading: null, bodyText: text };
+}
+
+function isTransactionPartiesHeadingCandidate(lines: string[]): boolean {
+  const opening = lines.slice(0, 8).join("\n");
+  const hasLessor = lines.some((line) =>
+    /^lessor\s*(?:[.:]\s*)?$/i.test(line.trim())
+  );
+  const hasLessee = lines.some((line) =>
+    /^lessee\s*(?:[.:]\s*)?$/i.test(line.trim())
+  );
+  return hasLessor && hasLessee && opening.length < 800;
 }
 
 function shouldSkipInjectedLabel(label: string): boolean {
@@ -383,30 +540,14 @@ export function blockToSegments(
   const text = normalizeExportText(block.text);
   const label = block.label.trim();
   const lines = splitTextIntoLines(text);
+  const { heading, bodyText } = resolveSectionHeading(label, lines);
 
-  if (fieldTextIncludesHeading({ label, text }) || contentOpensWithSectionHeading(lines)) {
-    const segments: ExportContentSegment[] = [];
-    if (lines.length > 0 && isHeadingLine(lines[0])) {
-      segments.push({ kind: "heading", text: lines[0] });
-      segments.push(...parseBlockIntoSegments(lines.slice(1).join("\n")));
-      return segments;
-    }
-    if (lines.length > 0 && /^\d+(?:\.\d+)*\.?\s+\S/.test(lines[0])) {
-      segments.push({ kind: "heading", text: lines[0] });
-      segments.push(...parseBlockIntoSegments(lines.slice(1).join("\n")));
-      return segments;
-    }
-    return parseBlockIntoSegments(text);
+  const segments: ExportContentSegment[] = [];
+  if (heading) {
+    segments.push({ kind: "heading", text: heading });
   }
-
-  if (shouldSkipInjectedLabel(label)) {
-    return parseBlockIntoSegments(text);
-  }
-
-  return [
-    { kind: "heading", text: label },
-    ...parseBlockIntoSegments(text),
-  ];
+  segments.push(...parseBlockBodyIntoSegments(bodyText));
+  return segments;
 }
 
 export function allBodySegments(
@@ -432,7 +573,7 @@ export function closingSegments(
 ): ExportContentSegment[] {
   const closing = resolveClosingBlockForExport(input);
   if (!closing) return [];
-  return parseBlockIntoSegments(closing);
+  return parseBlockBodyIntoSegments(closing);
 }
 
 function dedupeSegments(
@@ -442,12 +583,32 @@ function dedupeSegments(
   let cumulative = "";
 
   for (const segment of segments) {
+    const prev = deduped[deduped.length - 1];
+    if (
+      segment.kind === "heading" &&
+      prev?.kind === "heading" &&
+      normalizeLine(segment.text) === normalizeLine(prev.text)
+    ) {
+      continue;
+    }
+
     const fingerprint =
       segment.kind === "table"
         ? compactText(segment.rows.map((row) => row.join(" ")).join("\n"))
-        : compactText(segment.text);
+        : segment.kind === "subheading" || segment.kind === "heading"
+          ? compactText(segment.text)
+          : compactText(segment.text);
 
     if (fingerprint.length >= 50 && blockOverlapsBlock(fingerprint, cumulative)) {
+      continue;
+    }
+
+    if (
+      (segment.kind === "heading" || segment.kind === "subheading") &&
+      prev &&
+      (prev.kind === "heading" || prev.kind === "subheading") &&
+      normalizeLine(segment.text) === normalizeLine(prev.text)
+    ) {
       continue;
     }
 
@@ -485,6 +646,9 @@ export function buildMergedPlainText(input: ExportDocumentInput): string {
     .map((segment) => {
       if (segment.kind === "table") {
         return segment.rows.map((row) => row.join("  ")).join("\n");
+      }
+      if (segment.kind === "heading" || segment.kind === "subheading") {
+        return segment.text;
       }
       return segment.text;
     })
@@ -650,4 +814,32 @@ export function buildDealSummaryRows(
 /** Default PDF export uses the owned house layout (no precedent PDF overlay). */
 export function canUseHousePdfExport(input: ExportDocumentInput): boolean {
   return collectExportFieldBlocks(input.content).length > 0;
+}
+
+/** Footer label: "{Lessor name} LOI" when lessor is known. */
+export function resolveExportFooterLabel(input: ExportDocumentInput): string {
+  const summaryLessor = buildDealSummaryRows(input).find(
+    (row) => row.label === "Lessor" || row.label === "Seller"
+  )?.value;
+
+  const fieldLessor = collectExportFieldBlocks(input.content).find(
+    (block) => block.key === "lessor"
+  )?.text;
+
+  const raw =
+    input.templateDoc?.lessor?.trim() ||
+    summaryLessor ||
+    fieldLessor ||
+    null;
+
+  if (!raw) return "LOI";
+
+  const primary = raw
+    .split("\n")[0]
+    ?.replace(/\s*,\s*and\/or\b.*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!primary) return "LOI";
+  return `${primary} LOI`;
 }

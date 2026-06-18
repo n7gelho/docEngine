@@ -8,6 +8,7 @@ import {
   buildMergedExportSegments,
   canUseHousePdfExport,
   canUseTemplateSubstituteExport,
+  resolveExportFooterLabel,
   type ExportContentSegment,
 } from "@/lib/generation/export-loi-shared";
 import { buildTemplateSubstitutions } from "@/lib/generation/export-loi-substitutions";
@@ -138,6 +139,14 @@ function renderSegment(doc: PDFKit.PDFDocument, segment: ExportContentSegment) {
 
       break;
 
+    case "subheading":
+
+      doc.moveDown(0.25);
+
+      renderParagraph(doc, segment.text, { bold: true });
+
+      break;
+
     case "paragraph":
 
       doc.moveDown(0.15);
@@ -184,7 +193,7 @@ async function exportLoiAsPdfKit(
 
 
 
-    const footerLabel = "miniAviator LOI";
+    const footerLabel = resolveExportFooterLabel(input);
 
 
 

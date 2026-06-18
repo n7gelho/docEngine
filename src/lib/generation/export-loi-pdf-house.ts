@@ -10,6 +10,7 @@ import type { ExportContentSegment } from "@/lib/generation/export-loi-shared";
 import {
   buildDealSummaryRows,
   buildMergedExportSegments,
+  resolveExportFooterLabel,
   type DealSummaryRow,
   type ExportDocumentInput,
 } from "@/lib/generation/export-loi-shared";
@@ -353,6 +354,11 @@ async function drawSegment(
       current = { ...current, cursorY: current.cursorY - 6 };
       return drawParagraph(current, segment.text, fonts.bold, HEADING_SIZE, ctx);
     }
+    case "subheading": {
+      let current = await ensureSpace(state, lineHeight(FONT_SIZE) + 6, ctx);
+      current = { ...current, cursorY: current.cursorY - 4 };
+      return drawParagraph(current, segment.text, fonts.bold, FONT_SIZE, ctx);
+    }
     case "paragraph":
       return drawParagraph(state, segment.text, fonts.regular, FONT_SIZE, ctx);
     case "table":
@@ -362,13 +368,16 @@ async function drawSegment(
   }
 }
 
-function drawFooters(output: PDFDocument, font: PDFFont) {
+function drawFooters(
+  output: PDFDocument,
+  font: PDFFont,
+  footerLabel: string
+) {
   const pages = output.getPages();
-  const label = "miniAviator LOI";
 
   pages.forEach((page, index) => {
     const { width } = page.getSize();
-    const text = `${label}  ·  Page ${index + 1} of ${pages.length}`;
+    const text = `${footerLabel}  ·  Page ${index + 1} of ${pages.length}`;
     const textWidth = font.widthOfTextAtSize(text, FOOTER_SIZE);
     page.drawText(text, {
       x: (width - textWidth) / 2,
@@ -402,7 +411,7 @@ export async function exportLoiPdfHouse(
     }
   }
 
-  drawFooters(ctx.output, ctx.fonts.regular);
+  drawFooters(ctx.output, ctx.fonts.regular, resolveExportFooterLabel(input));
   const bytes = await ctx.output.save();
   return Buffer.from(bytes);
 }

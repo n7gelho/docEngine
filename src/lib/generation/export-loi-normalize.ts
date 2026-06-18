@@ -1,6 +1,15 @@
+/** Remove LOI Fake/Real markers embedded in lines (not only standalone). */
+export function stripInlinePageMarkers(text: string): string {
+  return text
+    .replace(/\bLOI\s+Fake\s*\d*/gi, " ")
+    .replace(/\bLOI\s+Real\s*/gi, " ");
+}
+
 /** Normalize ported LOI text before PDF/DOCX layout. */
 export function normalizeExportText(text: string): string {
-  return text
+  const stripped = stripInlinePageMarkers(text);
+  const repaired = repairGarbledDayCounts(stripped);
+  return repaired
     .replace(/\r\n/g, "\n")
     .replace(/\t+/g, " ")
     .split("\n")
@@ -11,10 +20,29 @@ export function normalizeExportText(text: string): string {
     .trim();
 }
 
+/** Fix reconcile-damaged day counts like "14,050,000 business days" → "14 business days". */
+export function repairGarbledDayCounts(text: string): string {
+  return text.replace(
+    /\b(\d{1,3}(?:,\d{3})+)\s+(business\s+)?days\b/gi,
+    (full, numStr: string, business?: string) => {
+      const total = Number(numStr.replace(/,/g, ""));
+      if (!Number.isFinite(total) || total <= 365) return full;
+      const lead = numStr.match(/^(\d{1,3}),/)?.[1];
+      if (lead && Number(lead) <= 365) {
+        const biz = business?.trim() ? `${business.trim()} ` : "";
+        return `${lead} ${biz}days`;
+      }
+      return full;
+    }
+  );
+}
+
 /** Strip embedded PDF page markers like "LOI – Emirate Skyways3" or "LOI Fake 1". */
 export function isPageMarkerLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
+  if (/^LOI\s+Fake\s*\d*\s*$/i.test(trimmed)) return true;
+  if (/^LOI\s+Real\s*$/i.test(trimmed)) return true;
   if (/^LOI\s*[–—-]\s*.+\d+\s*$/i.test(trimmed)) return true;
   if (/^LOI\s*[–—-]\s*.+\s+\d+\s*$/i.test(trimmed)) return true;
   if (/^LOI\s+\S+(?:\s+\S+)*\s+\d+\s*$/i.test(trimmed)) return true;
@@ -25,6 +53,165 @@ export function isPageMarkerLine(line: string): boolean {
 
 export function isGenericSectionLabel(label: string): boolean {
   return /^section\s+\d+$/i.test(label.trim());
+}
+
+/** Operative LOI clause text misread as a heading (e.g. "Lessee shall pay rent…"). */
+export function isOperativeProseLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (
+    /\b(?:shall|will|must|may|agrees?|undertakes?|acknowledges?|represents?|warrants?|is\s+responsible|are\s+responsible|has\s+agreed|have\s+agreed|hereby|notwithstanding)\b/i.test(
+      trimmed
+    )
+  ) {
+    return true;
+  }
+  if (/[.!?;:]$/.test(trimmed) && trimmed.split(/\s+/).length >= 5) {
+    return true;
+  }
+  return false;
+}
+
+/** Company / party name lines that are not section titles. */
+export function isPartyNameLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (/^transaction parties$/i.test(trimmed)) return false;
+  if (
+    /\b(?:limited|ltd\.?|llc|inc\.?|corp\.?|plc|gmbh|airways|airlines|aviation|holdings)\b/i.test(
+      trimmed
+    ) &&
+    !/^\d+(?:\.\d+)*\.?\s+/i.test(trimmed)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** True when a line is a genuine LOI section title (short label or numbered heading). */
+export function isValidLoiSectionTitle(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.length >= 100) return false;
+  if (isPageMarkerLine(trimmed)) return false;
+  if (isGenericSectionLabel(trimmed)) return false;
+  if (isOperativeProseLine(trimmed)) return false;
+  if (isPartyNameLine(trimmed)) return false;
+  if (/^letter of intent$/i.test(trimmed)) return false;
+  if (/^re:\s/i.test(trimmed)) return false;
+  if (/^dear\s+/i.test(trimmed)) return false;
+  if (/^(?:appendix|schedule|annex|part)\s+/i.test(trimmed)) return true;
+  if (/^\d+(?:\.\d+)*\.?\s+\S/.test(trimmed)) return true;
+
+  const words = trimmed.split(/\s+/).length;
+  if (words > 8) return false;
+
+  if (/^[A-Z0-9][A-Z0-9\s\-/&().,'"]+$/.test(trimmed) && words <= 8) {
+    return true;
+  }
+
+  if (words <= 5 && /^[A-Z]/.test(trimmed) && !/[.!?]$/.test(trimmed)) {
+    return true;
+  }
+
+  return false;
+}
+
+const SCHEDULE_HEADER = [
+  "Airframe",
+  "Engines",
+  "MSN",
+  "Delivery Quarter",
+  "Scheduled Delivery",
+];
+
+/** Parse one mashed Boeing schedule row (no header). */
+export function tryParseMashedBoeingScheduleRow(line: string): string[] | null {
+  const match = line
+    .trim()
+    .match(
+      /Boeing\s+(\d{3}-\d+)([A-Z]{2}\d+[A-Z0-9]*?)(\d{3,})(Q\d)\s*(.*)$/i
+    );
+  if (!match) return null;
+  return [
+    `Boeing ${match[1]}`,
+    match[2],
+    match[3],
+    match[4],
+    match[5].trim(),
+  ];
+}
+
+/** Parse mashed Boeing schedule rows from PDF text (no column spaces). */
+export function extractMashedScheduleRows(text: string): string[][] | null {
+  const pattern =
+    /Boeing\s+(\d{3}-\d+)([A-Z]{2}\d+[A-Z0-9]*?)(\d{3,})(Q\d)\s*/gi;
+  const matches = [...text.matchAll(pattern)];
+  if (matches.length === 0) return null;
+
+  const rows: string[][] = [];
+  for (let i = 0; i < matches.length; i++) {
+    const match = matches[i];
+    const start = (match.index ?? 0) + match[0].length;
+    const end = matches[i + 1]?.index ?? text.length;
+    const delivery = text.slice(start, end).replace(/\s+/g, " ").trim();
+    rows.push([
+      `Boeing ${match[1]}`,
+      match[2],
+      match[3],
+      match[4],
+      delivery,
+    ]);
+  }
+
+  return [SCHEDULE_HEADER, ...rows];
+}
+
+/** Short topic line inside a section body (Insurance, Taxes, Part B, etc.). */
+export function isLoiSubheadingLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.length > 70) return false;
+  if (isOperativeProseLine(trimmed)) return false;
+  if (isPartyNameLine(trimmed)) return false;
+  if (isScheduleHeaderFragment(trimmed)) return false;
+  if (/^(?:appendix|schedule|section)\s+/i.test(trimmed)) return true;
+  if (/^part\s+[ab]$/i.test(trimmed)) return true;
+
+  const words = trimmed.split(/\s+/).length;
+  if (words === 1) {
+    return /^(?:insurance|taxes|registration|rent|sanctions|timetable|enforceability|payments|configuration|paint|weights|repairs|maintenance|redelivery|confidentiality|documentation)$/i.test(
+      trimmed
+    );
+  }
+
+  if (
+    /^(?:insurance|taxes|registration|subleasing|maintenance payments|redelivery conditions|redelivery location|confidentiality|documentation|sanctions|timetable|enforceability|payments|airframe|engines|weights|paint|configuration|landing\s+gear|interior\s+configuration|net\s+lease|no\s+brokers|validity\s+of\s+terms|assignment\/financing|transaction\s+expenses|export\s+and\s+certificate\s+of\s+airworthiness|airworthiness\s+directives|repairs|components\/parts|aircraft documents|lease period|rolls royce)/i.test(
+      trimmed
+    )
+  ) {
+    return true;
+  }
+
+  return words >= 2 && words <= 5 && isValidLoiSectionTitle(trimmed);
+}
+
+/** Table column labels split onto separate lines by PDF extraction. */
+export function isScheduleHeaderFragment(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (
+    /^(?:airframe|engines?|msn|scheduled|delivery|month|quarter|dates?)$/i.test(
+      trimmed
+    )
+  ) {
+    return true;
+  }
+  if (
+    /^airframe\s+engines?\s+msn/i.test(trimmed) &&
+    !/\b(?:shall|the|lessee|lessor)\b/i.test(trimmed)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function compactText(text: string): string {
@@ -106,6 +293,19 @@ export function tryParseScheduleRow(line: string): string[] | null {
       aircraftRow[3],
       aircraftRow[4],
       aircraftRow[5],
+    ];
+  }
+
+  const mashedBoeing = trimmed.match(
+    /^Boeing\s+(\d{3}-\d+)([A-Z]{2}\d+[A-Z0-9]*?)(\d{3,})(Q\d)\s*(.+)$/i
+  );
+  if (mashedBoeing) {
+    return [
+      `Boeing ${mashedBoeing[1]}`,
+      mashedBoeing[2],
+      mashedBoeing[3],
+      mashedBoeing[4],
+      mashedBoeing[5].trim(),
     ];
   }
 

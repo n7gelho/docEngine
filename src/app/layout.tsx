@@ -1,22 +1,32 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import {
+  Fraunces,
+  IBM_Plex_Mono,
+  IBM_Plex_Sans,
+} from "next/font/google";
 import Link from "next/link";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const fraunces = Fraunces({
+  variable: "--font-serif-fraunces",
   subsets: ["latin"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const ibmSans = IBM_Plex_Sans({
+  variable: "--font-sans-ibm",
+  weight: ["300", "400", "500", "600"],
+  subsets: ["latin"],
+});
+
+const ibmMono = IBM_Plex_Mono({
+  variable: "--font-mono-ibm",
+  weight: ["400", "500"],
   subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
-  title: "docEngine",
-  description:
-    "Ingest purchase and lease deal documents, extract metadata, filter, and link LOIs to OLAs.",
+  title: "miniAviator",
+  description: "Aircraft deal document intelligence and LOI generation.",
 };
 
 export default function RootLayout({
@@ -27,30 +37,35 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} min-h-screen antialiased`}
+        className={`${fraunces.variable} ${ibmSans.variable} ${ibmMono.variable} flex min-h-screen flex-col antialiased`}
       >
-        <header className="border-b border-border bg-white">
-          <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6">
-            <Link href="/" className="text-lg font-semibold text-slate-900">
-              docEngine
+        <header className="topbar relative z-10 h-[58px] shrink-0">
+          <div className="mx-auto flex h-full max-w-[1600px] items-center justify-between gap-4 px-4 sm:px-6">
+            <Link href="/" className="flex items-center gap-3">
+              <span className="brand-mark" aria-hidden>
+                m
+              </span>
+              <span className="brand-name">miniAviator</span>
             </Link>
-            <nav className="flex gap-4 text-sm">
-              <Link href="/" className="text-slate-600 hover:text-primary">
+            <nav className="flex items-center gap-1 text-sm">
+              <Link href="/" className="nav-link">
                 Home
               </Link>
-              <Link href="/documents" className="text-slate-600 hover:text-primary">
+              <Link href="/documents" className="nav-link">
                 Documents
               </Link>
-              <Link href="/search" className="text-slate-600 hover:text-primary">
-                Semantic Search
+              <Link href="/search" className="nav-link">
+                Search
               </Link>
-              <Link href="/precedents" className="text-slate-600 hover:text-primary">
-                LOI generator
+              <Link href="/precedents" className="nav-link">
+                Contract Generator
               </Link>
             </nav>
           </div>
         </header>
-        <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">{children}</main>
+        <main className="flex min-h-0 flex-1 flex-col px-4 sm:px-6">
+          {children}
+        </main>
       </body>
     </html>
   );

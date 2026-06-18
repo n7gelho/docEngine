@@ -105,13 +105,9 @@ export default function DocumentsPage() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="page-shell space-y-8">
       <section>
-        <h1 className="text-3xl font-bold tracking-tight">Document library</h1>
-        <p className="mt-2 max-w-3xl text-muted">
-          Browse, filter, and manage ingested LOIs and OLAs for purchase and
-          lease deals.
-        </p>
+        <h1 className="page-title">Document library</h1>
       </section>
 
       <MetadataFilters

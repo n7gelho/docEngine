@@ -6,9 +6,12 @@ import { loiDrafts } from "@/lib/db/schema";
 import { renderLoiDraftText } from "@/lib/generation/assemble-loi-draft";
 import {
   exportLoiDraft,
+  formatExportWarnings,
+  sanitizeHttpHeaderValue,
   type LoiExportFormat,
 } from "@/lib/generation/export-loi-document";
 import type { LoiDraftContent } from "@/lib/generation/loi-draft-types";
+import { briefFromUnknownInput } from "@/lib/retrieval/proforma-brief";
 
 export const runtime = "nodejs";
 
@@ -38,14 +41,30 @@ export async function GET(request: NextRequest, context: RouteContext) {
     }
 
     const content = draft.content as LoiDraftContent;
-    const exported = await exportLoiDraft(content, format, renderLoiDraftText);
-
-    return new NextResponse(new Uint8Array(exported.buffer), {
-      headers: {
-        "Content-Type": exported.mimeType,
-        "Content-Disposition": `attachment; filename="${exported.filename}"`,
-      },
+    const brief = briefFromUnknownInput(
+      (draft.brief as Record<string, unknown>) ?? {}
+    );
+    const exported = await exportLoiDraft(content, format, renderLoiDraftText, {
+      brief,
     });
+
+    const headers: Record<string, string> = {
+      "Content-Type": exported.mimeType,
+      "Content-Disposition": `attachment; filename="${sanitizeHttpHeaderValue(exported.filename)}"`,
+    };
+    if (exported.validation.warnings.length > 0) {
+      headers["X-Export-Warnings"] = formatExportWarnings(
+        exported.validation.warnings
+      );
+      headers["X-Export-Completeness"] = String(
+        exported.validation.completenessPct
+      );
+    }
+    if (exported.pdfStrategy) {
+      headers["X-Export-Strategy"] = exported.pdfStrategy;
+    }
+
+    return new NextResponse(new Uint8Array(exported.buffer), { headers });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to export draft";

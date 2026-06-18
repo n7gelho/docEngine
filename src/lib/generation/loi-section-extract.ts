@@ -134,9 +134,10 @@ function extractPreamble(fullText: string, firstSectionStart: number): Extracted
 export function extractLoiSections(fullText: string | null | undefined): ExtractedLoiSection[] {
   if (!fullText?.trim()) return [];
 
-  const loiBlocks = splitLoiByHeadings(fullText);
+  const stripped = stripClosingFromText(fullText);
+  const loiBlocks = splitLoiByHeadings(stripped);
   const blocks =
-    loiBlocks.length >= 2 ? loiBlocks : splitTextIntoSections(fullText);
+    loiBlocks.length >= 2 ? loiBlocks : splitTextIntoSections(stripped);
   const sections: ExtractedLoiSection[] = [];
 
   for (let i = 0; i < blocks.length; i++) {
@@ -173,11 +174,75 @@ export function extractTemplatePreamble(
 }
 
 const LOI_HEADING_LINE =
-  /^(?:(?:\d+(?:\.\d+)*\.?\s+)|(?:CLAUSE|ARTICLE|SCHEDULE)\s+\d+(?:\.\d+)?[.:]?\s+)?(?:[A-Z][A-Z0-9\s\-\/&(),.'"]{3,}|[A-Z][a-z]+(?:\s+[A-Za-z]+){1,8})$/;
+  /^(?:(?:\d+(?:\.\d+)*[.)]?\s+)|(?:\d+\)\s+)|(?:(?:CLAUSE|ARTICLE|SCHEDULE|PART)\s+(?:\d+|[IVXLC]+)[.:]?\s+)|(?:(?:I{1,3}|IV|VI{0,3}|IX|X{1,3})\.\s+))?(?:[A-Z][A-Z0-9\s\-\/&(),.'"]{3,}|[A-Z][a-z]+(?:\s+[A-Za-z]+){1,10})$/;
+
+const CLOSING_BLOCK_START =
+  /^(?:yours?\s+(?:faithfully|sincerely)|sincerely|respectfully|for\s+and\s+on\s+behalf|signed(?:\s+by)?|signature|executed\s+(?:as\s+a\s+)?deed|in\s+witness\s+whereof|acknowledged\s+and\s+accepted|authorised\s+signatory|authorized\s+signatory)/i;
+
+const CLOSING_BLOCK_LINE =
+  /^(?:name|title|position|date|witness|director|by)\s*:/i;
+
+/** Signature / closing block at the end of a template LOI (not a body section). */
+export function extractTemplateClosingBlock(
+  fullText: string | null | undefined
+): string | null {
+  if (!fullText?.trim()) return null;
+
+  const lines = fullText.split("\n");
+  let startIndex = -1;
+
+  for (let i = Math.max(0, lines.length - 80); i < lines.length; i++) {
+    const trimmed = lines[i]?.trim() ?? "";
+    if (!trimmed) continue;
+    if (CLOSING_BLOCK_START.test(trimmed) || CLOSING_BLOCK_LINE.test(trimmed)) {
+      startIndex = i;
+      break;
+    }
+  }
+
+  if (startIndex < 0) {
+    for (let i = lines.length - 1; i >= Math.max(0, lines.length - 25); i--) {
+      const trimmed = lines[i]?.trim() ?? "";
+      if (/^_{3,}$/.test(trimmed) || /^[\s\-–—]{8,}$/.test(trimmed)) {
+        startIndex = i;
+        break;
+      }
+    }
+  }
+
+  if (startIndex < 0) return null;
+
+  const closing = lines.slice(startIndex).join("\n").trim();
+  return closing.length >= 20 ? closing : null;
+}
+
+function stripClosingFromText(fullText: string): string {
+  const closing = extractTemplateClosingBlock(fullText);
+  if (!closing) return fullText;
+  const idx = fullText.lastIndexOf(closing);
+  if (idx < 0) return fullText;
+  return fullText.slice(0, idx).trimEnd();
+}
+
+function isLikelyHeadingLine(trimmed: string, bodyLen: number): boolean {
+  if (!trimmed || trimmed.length >= 120) return false;
+  if (LOI_HEADING_LINE.test(trimmed)) return bodyLen > 60;
+  if (
+    /^[A-Z][A-Z0-9\s\-\/&(),.'"]{4,}$/.test(trimmed) &&
+    trimmed.split(/\s+/).length <= 10
+  ) {
+    return bodyLen > 80;
+  }
+  if (/^(?:SCHEDULE|ANNEX|APPENDIX)\s+[A-Z0-9]+/i.test(trimmed)) {
+    return bodyLen > 40;
+  }
+  return false;
+}
 
 /** LOI-specific heading split before generic window fallback. */
 function splitLoiByHeadings(fullText: string): Array<{ text: string }> {
-  const lines = fullText.split("\n");
+  const withoutClosing = stripClosingFromText(fullText);
+  const lines = withoutClosing.split("\n");
   const chunks: string[] = [];
   let current: string[] = [];
   let currentHeading: string | undefined;
@@ -192,12 +257,7 @@ function splitLoiByHeadings(fullText: string): Array<{ text: string }> {
   for (const line of lines) {
     const trimmed = line.trim();
     const bodyLen = current.join("\n").trim().length;
-    if (
-      trimmed &&
-      trimmed.length < 120 &&
-      LOI_HEADING_LINE.test(trimmed) &&
-      bodyLen > 100
-    ) {
+    if (isLikelyHeadingLine(trimmed, bodyLen)) {
       flush();
       currentHeading = trimmed;
     } else {

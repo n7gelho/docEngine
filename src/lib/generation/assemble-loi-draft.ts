@@ -17,6 +17,7 @@ import {
   LOI_MASTER_TEMPLATE_SECTIONS,
 } from "@/lib/generation/loi-master-template";
 import { reconcileBoilerplateWithProforma } from "@/lib/generation/proforma-reconcile";
+import type { ReconcilePrecedentExtras } from "@/lib/generation/proforma-reconcile";
 import type {
   AssembleLoiDraftInput,
   AssembleLoiDraftResult,
@@ -50,6 +51,9 @@ type PrecedentSource = {
   jurisdiction: string | null;
   lessor: string | null;
   lessee: string | null;
+  seller: string | null;
+  buyer: string | null;
+  currency: string | null;
   effectiveDate: string | null;
   createdAt: Date;
   parameters: Record<DealParameterKey, { value: string | number | null }>;
@@ -118,6 +122,9 @@ function documentToPrecedentSource(
     jurisdiction: row.jurisdiction,
     lessor: row.lessor,
     lessee: row.lessee,
+    seller: row.seller,
+    buyer: row.buyer,
+    currency: row.currency,
     effectiveDate: row.effectiveDate,
     createdAt: row.createdAt,
     parameters: flat,
@@ -149,6 +156,19 @@ function precedentValuesForBriefKeys(
     out.counterparty = out.counterparty ?? precedent.lessee;
   }
   return out;
+}
+
+function reconcileExtrasForPrecedent(
+  precedent: PrecedentSource
+): ReconcilePrecedentExtras {
+  return {
+    governingLaw: precedent.governingLaw,
+    lessor: precedent.lessor,
+    lessee: precedent.lessee,
+    seller: precedent.seller,
+    buyer: precedent.buyer,
+    currency: precedent.currency,
+  };
 }
 
 function getSectionTextFromPrecedent(
@@ -332,7 +352,8 @@ function resolveSectionField(
   const reconciled = reconcileBoilerplateWithProforma(
     picked.text,
     brief,
-    precedentValues
+    precedentValues,
+    reconcileExtrasForPrecedent(picked.precedent)
   );
 
   usedDonorKeys?.add(picked.donorKey);
@@ -437,7 +458,8 @@ function buildFromMasterTemplate(
       const reconciled = reconcileBoilerplateWithProforma(
         best.value,
         brief,
-        precedentValues
+        precedentValues,
+        reconcileExtrasForPrecedent(best.precedent)
       );
 
       const source: DraftFieldSource = reconciled.reconciled

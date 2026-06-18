@@ -31,20 +31,108 @@ function normalizeToken(value: string): string {
     .replace(/\s+/g, " ");
 }
 
+/** Generic legal phrasing — not jurisdiction identifiers. */
+const GOVERNING_LAW_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "applicable",
+  "are",
+  "as",
+  "be",
+  "by",
+  "civil",
+  "clause",
+  "common",
+  "contract",
+  "court",
+  "courts",
+  "document",
+  "for",
+  "forum",
+  "governed",
+  "governing",
+  "in",
+  "is",
+  "its",
+  "jurisdiction",
+  "law",
+  "laws",
+  "legal",
+  "of",
+  "or",
+  "provisions",
+  "pursuant",
+  "shall",
+  "system",
+  "the",
+  "to",
+  "under",
+  "with",
+]);
+
+function stripGoverningLawBoilerplate(normalized: string): string {
+  return normalized
+    .replace(/^(the\s+)?(laws?\s+of\s+(the\s+)?)/, "")
+    .replace(/^(the\s+)?(law\s+of\s+(the\s+)?)/, "")
+    .replace(/^state\s+of\s+/, "")
+    .replace(/\s+(shall|will|is|are|govern(s|ing)?|apply|applies)\b.*$/, "")
+    .trim();
+}
+
+/** Tokens that identify the jurisdiction (e.g. england, china, new, york). */
+export function meaningfulGoverningLawTokens(value: string): string[] {
+  const stripped = stripGoverningLawBoilerplate(normalizeToken(value));
+  if (!stripped) return [];
+
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (const token of stripped.split(" ")) {
+    if (token.length <= 1 || GOVERNING_LAW_STOP_WORDS.has(token)) continue;
+    if (seen.has(token)) continue;
+    seen.add(token);
+    tokens.push(token);
+  }
+  return tokens;
+}
+
 export function governingLawTokenOverlap(a: string, b: string): number {
   const left = normalizeToken(a);
   const right = normalizeToken(b);
   if (!left || !right) return 0;
   if (left === right) return 1;
   if (left.includes(right) || right.includes(left)) return 0.85;
-  const leftTokens = new Set(left.split(" ").filter((t) => t.length > 1));
-  const rightTokens = new Set(right.split(" ").filter((t) => t.length > 1));
-  if (leftTokens.size === 0 || rightTokens.size === 0) return 0;
-  let shared = 0;
-  for (const token of leftTokens) {
-    if (rightTokens.has(token)) shared++;
+
+  const leftTokens = meaningfulGoverningLawTokens(a);
+  const rightTokens = meaningfulGoverningLawTokens(b);
+
+  if (leftTokens.length === 0 || rightTokens.length === 0) {
+    const leftFallback = new Set(left.split(" ").filter((t) => t.length > 1));
+    const rightFallback = new Set(right.split(" ").filter((t) => t.length > 1));
+    if (leftFallback.size === 0 || rightFallback.size === 0) return 0;
+    let shared = 0;
+    for (const token of leftFallback) {
+      if (rightFallback.has(token)) shared++;
+    }
+    return shared / Math.max(leftFallback.size, rightFallback.size);
   }
-  return shared / Math.max(leftTokens.size, rightTokens.size);
+
+  const leftSet = new Set(leftTokens);
+  const rightSet = new Set(rightTokens);
+
+  let shared = 0;
+  for (const token of leftSet) {
+    if (rightSet.has(token)) shared++;
+  }
+
+  if (shared === 0) return 0;
+
+  const leftAllInRight = [...leftSet].every((t) => rightSet.has(t));
+  const rightAllInLeft = [...rightSet].every((t) => leftSet.has(t));
+  if (leftAllInRight || rightAllInLeft) return 0.9;
+
+  const union = new Set([...leftSet, ...rightSet]).size;
+  return shared / union;
 }
 
 /** Recency from when the document was processed into the library. */

@@ -6,15 +6,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DealParameterKey } from "@/lib/extraction/deal-parameters";
 import { DEAL_PARAMETER_KEYS } from "@/lib/extraction/deal-parameters";
 import {
-  DEAL_PARAMETER_CHAT_PROMPTS,
   DEAL_PARAMETER_LABELS,
   getFilledBriefKeys,
+  getProformaGoverningLaw,
   type ProformaBrief,
 } from "@/lib/retrieval/proforma-brief";
+import { formatPrecedentDealSummary } from "@/lib/retrieval/precedent-summary";
+import { computeSuitabilityScore } from "@/lib/retrieval/template-fitness";
 import {
   dealTypeBadgeClass,
-  formatParties,
-  formatRent,
 } from "@/lib/types";
 
 type PrecedentResult = {
@@ -96,6 +96,173 @@ function formatProcessedDate(iso: string): string {
   });
 }
 
+function recencyAgeYears(processedAt: string): number | null {
+  const date = new Date(processedAt);
+  if (Number.isNaN(date.getTime())) return null;
+  return Math.max(0, new Date().getFullYear() - date.getFullYear());
+}
+
+function recencyAgeLabel(years: number | null): string {
+  if (years === null) return "—";
+  if (years <= 1) return "≤ 1 year old";
+  if (years <= 3) return "≤ 3 years old";
+  if (years <= 5) return "≤ 5 years old";
+  if (years <= 8) return "≤ 8 years old";
+  return "older than 8 years";
+}
+
+function renderPrecedentMatchDetails(
+  result: PrecedentResult,
+  brief: ProformaBrief
+) {
+  const processedDate = new Date(result.processedAt);
+  const suitability = computeSuitabilityScore(
+    {
+      governingLaw: result.governingLaw,
+      createdAt: processedDate,
+    },
+    brief
+  );
+  const proformaLaw = getProformaGoverningLaw(brief);
+  const ageYears = recencyAgeYears(result.processedAt);
+
+  return (
+    <details className="group mt-2">
+      <summary className="cursor-pointer list-none text-xs font-medium text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
+        <span className="inline-flex items-center gap-1">
+          <span
+            className="inline-block transition-transform group-open:rotate-90"
+            aria-hidden
+          >
+            ▸
+          </span>
+          Match details
+        </span>
+      </summary>
+      <div className="mt-2 space-y-3 border-t border-border pt-2 text-xs">
+        <div>
+          <p className="font-medium text-foreground">Scores</p>
+          <dl className="mt-1 grid gap-1 text-muted">
+            <div className="flex justify-between gap-4">
+              <dt>Parameter match</dt>
+              <dd className="font-medium text-foreground">
+                {formatPercent(result.matchScore)}
+                {result.comparedParameters > 0 && (
+                  <span className="font-normal text-muted">
+                    {" "}
+                    · {result.matchedParameters}/{result.comparedParameters}{" "}
+                    matched
+                  </span>
+                )}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt>Suitability</dt>
+              <dd className="font-medium text-foreground">
+                {formatPercent(result.suitabilityScore)}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt>Precedent (combined)</dt>
+              <dd className="font-medium text-foreground">
+                {formatPercent(result.precedentScore)}
+              </dd>
+            </div>
+          </dl>
+        </div>
+
+        <div>
+          <p className="font-medium text-foreground">Suitability factors</p>
+          <dl className="mt-1 space-y-2 text-muted">
+            <div>
+              <dt className="font-medium text-foreground/80">Governing law</dt>
+              {proformaLaw ? (
+                <dd className="mt-1 space-y-0.5">
+                  <p>
+                    <span className="text-muted">Your proforma:</span>{" "}
+                    {proformaLaw}
+                  </p>
+                  <p>
+                    <span className="text-muted">Precedent:</span>{" "}
+                    {result.governingLaw?.trim() || "—"}
+                  </p>
+                  <p>
+                    <span className="text-muted">Alignment:</span>{" "}
+                    <span className="font-medium text-foreground">
+                      {formatPercent(suitability.breakdown.governingLaw ?? 0)}
+                    </span>
+                  </p>
+                </dd>
+              ) : (
+                <dd className="mt-1">
+                  Not in your proforma — suitability uses recency only.
+                </dd>
+              )}
+            </div>
+            <div>
+              <dt className="font-medium text-foreground/80">Recency</dt>
+              <dd className="mt-1 space-y-0.5">
+                <p>
+                  <span className="text-muted">Processed:</span>{" "}
+                  {formatProcessedDate(result.processedAt)}
+                  {ageYears !== null && (
+                    <span>
+                      {" "}
+                      · {recencyAgeLabel(ageYears)}
+                    </span>
+                  )}
+                </p>
+                <p>
+                  <span className="text-muted">Score:</span>{" "}
+                  <span className="font-medium text-foreground">
+                    {formatPercent(suitability.breakdown.recency)}
+                  </span>
+                </p>
+              </dd>
+            </div>
+          </dl>
+        </div>
+
+        {result.parameterMatches.length > 0 && (
+          <div>
+            <p className="font-medium text-foreground">Parameter comparison</p>
+            <ul className="mt-1 space-y-1.5">
+              {result.parameterMatches.map((match) => (
+                <li
+                  key={match.key}
+                  className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5"
+                >
+                  <span className="min-w-0 text-muted">
+                    <span
+                      className={
+                        match.matched
+                          ? "text-emerald-700"
+                          : "text-muted"
+                      }
+                      aria-hidden
+                    >
+                      {match.matched ? "✓" : "·"}
+                    </span>{" "}
+                    {match.label}
+                  </span>
+                  <span className="shrink-0 text-right text-foreground/90">
+                    <span className="text-muted">{match.briefValue}</span>
+                    {" → "}
+                    {match.documentValue ?? "—"}
+                    <span className="ml-1 text-muted">
+                      ({formatPercent(match.score)})
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
 function assistantText(text: string): ChatMessage {
   return { id: nextMessageId(), role: "assistant", kind: "text", text };
 }
@@ -128,9 +295,7 @@ function withoutSearchOutputMessages(
 export function PrecedentChatbot() {
   const router = useRouter();
   const [messages, setMessages] = useState<ChatMessage[]>([
-    assistantText(
-      "I'll help you find the three most similar lease contracts in your library. First, which document are you preparing?"
-    ),
+    assistantText("Which document are you preparing?"),
   ]);
   const [step, setStep] = useState<ChatStep>("pick-doc-type");
   const [brief, setBrief] = useState<ProformaBrief>({});
@@ -205,7 +370,7 @@ export function PrecedentChatbot() {
       userText(type === "LOI" ? "Letter of Intent (LOI)" : "Operating Lease Agreement (OLA)")
     );
     appendMessage(
-      assistantText("How would you like to provide your proforma parameters?")
+      assistantText("How would you like to provide your proforma?")
     );
     setStep("pick-input");
   }
@@ -219,11 +384,7 @@ export function PrecedentChatbot() {
     setGoverningLawInput("");
     setError(null);
     setInputValue("");
-    appendMessage(
-      assistantText(
-        "Enter any details you have — leave a field blank to skip it."
-      )
-    );
+    appendMessage(assistantText("Enter any details you have."));
   }
 
   function startUploadFlow() {
@@ -232,9 +393,7 @@ export function PrecedentChatbot() {
     setExtraReviewKeys([]);
     setGoverningLawInput("");
     setError(null);
-    appendMessage(
-      assistantText("Upload your proforma file (PDF or DOCX).")
-    );
+    appendMessage(assistantText("Upload your proforma file."));
     fileInputRef.current?.click();
   }
 
@@ -332,9 +491,7 @@ export function PrecedentChatbot() {
 
   function proceedToGoverningLaw() {
     appendMessage(
-      assistantText(
-        "What governing law should apply to this deal? This helps rank precedents by legal fit. You can skip if you prefer not to specify."
-      )
+      assistantText("What governing law should apply?")
     );
     setGoverningLawInput(
       brief.governingLaw ? String(brief.governingLaw) : ""
@@ -494,9 +651,7 @@ export function PrecedentChatbot() {
     setGenerating(false);
     setGoverningLawInput("");
     setMessages([
-      assistantText(
-        "I'll help you find the three most similar lease contracts in your library. First, which document are you preparing?"
-      ),
+      assistantText("Which document are you preparing?"),
     ]);
   }
 
@@ -522,7 +677,7 @@ export function PrecedentChatbot() {
           </span>
         </div>
         {message.extractModel && (
-          <p className="text-xs text-muted">Extracted with {message.extractModel}</p>
+          <p className="text-xs text-muted">{message.extractModel}</p>
         )}
         {keysToShow.length === 0 ? (
           <p className="text-sm text-muted">No parameters yet.</p>
@@ -682,27 +837,20 @@ export function PrecedentChatbot() {
 
     return (
       <div className="space-y-3">
-        <p className="text-sm font-medium text-slate-800">
+        <p className="font-serif text-sm font-medium text-foreground">
           Top {message.targetDocumentType} matches
         </p>
-        {isLoi && (
-          <p className="text-xs text-muted">
-            Ranked by precedent score (deal match + suitability). The top
-            precedent is pre-selected for generation (defines the LOI structure).
-            Add others only if they are similarly relevant.
-          </p>
-        )}
         <ul className="space-y-3">
           {message.results.map((result, index) => {
-            const parties = formatParties(result);
             const selected = selectedPrecedentIds.has(result.documentId);
+            const dealSummary = formatPrecedentDealSummary(result);
             return (
               <li
                 key={result.documentId}
                 className={`rounded-lg border p-3 ${
                   selected && isLoi
-                    ? "border-primary/40 bg-primary/5"
-                    : "border-border bg-slate-50/80"
+                    ? "border-primary/35 bg-[var(--primary-wash)]"
+                    : "border-border bg-card"
                 }`}
               >
                 <div className="flex flex-wrap items-start justify-between gap-2">
@@ -747,35 +895,10 @@ export function PrecedentChatbot() {
                     </span>
                   </div>
                 </div>
-                <p className="mt-2 text-xs text-muted">
-                  {[result.documentType, parties.primary, result.aircraftType]
-                    .filter(Boolean)
-                    .join(" · ")}
+                <p className="mt-2 text-sm leading-relaxed text-[var(--ink-soft)]">
+                  {dealSummary}
                 </p>
-                <p className="mt-1 text-xs text-muted">
-                  Governing law: {result.governingLaw ?? "—"}
-                  {" · "}
-                  Processed: {formatProcessedDate(result.processedAt)}
-                </p>
-                <p className="mt-1 text-xs text-muted">
-                  {result.leaseType && `Type: ${result.leaseType}`}
-                  {result.term && ` · Term: ${result.term}`}
-                  {result.monthlyRent != null &&
-                    ` · Rent: ${formatRent(result.monthlyRent, result.currency)}`}
-                </p>
-                <ul className="mt-2 space-y-0.5 text-xs">
-                  {result.parameterMatches.map((match) => (
-                    <li
-                      key={match.key}
-                      className={
-                        match.matched ? "text-emerald-700" : "text-slate-500"
-                      }
-                    >
-                      {match.matched ? "✓" : "·"} {match.label}:{" "}
-                      {match.documentValue ?? "—"}
-                    </li>
-                  ))}
-                </ul>
+                {renderPrecedentMatchDetails(result, brief)}
               </li>
             );
           })}
@@ -811,7 +934,7 @@ export function PrecedentChatbot() {
 
     if (message.kind === "parameters") {
       return (
-        <div key={message.id} className="max-w-[95%] rounded-xl bg-white px-4 py-3 text-sm text-slate-800 shadow-sm">
+        <div key={message.id} className="chat-block">
           {renderParametersCard(message)}
         </div>
       );
@@ -819,7 +942,7 @@ export function PrecedentChatbot() {
 
     if (message.kind === "results") {
       return (
-        <div key={message.id} className="max-w-[95%] rounded-xl bg-white px-4 py-3 text-sm text-slate-800 shadow-sm">
+        <div key={message.id} className="chat-block max-w-full">
           {renderResultsCard(message)}
         </div>
       );
@@ -828,11 +951,9 @@ export function PrecedentChatbot() {
     return (
       <div
         key={message.id}
-        className={`max-w-[85%] rounded-xl px-4 py-3 text-sm ${
-          isUser
-            ? "ml-auto bg-primary text-white"
-            : "bg-white text-slate-800 shadow-sm"
-        }`}
+        className={
+          isUser ? "chat-bubble-user" : "chat-bubble-assistant"
+        }
       >
         {message.text}
       </div>
@@ -840,7 +961,7 @@ export function PrecedentChatbot() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl">
+    <div className="mx-auto flex h-full min-h-0 w-full max-w-6xl flex-1 flex-col">
       <input
         ref={fileInputRef}
         type="file"
@@ -853,20 +974,21 @@ export function PrecedentChatbot() {
         }}
       />
 
-      <section className="card flex min-h-[640px] flex-col">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold">Precedent finder</h2>
+      <section className="chat-panel">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-5 py-4">
+          <h2 className="font-serif text-lg font-medium text-foreground">
+            Assistant
+          </h2>
           <button type="button" className="btn-secondary" onClick={resetChat}>
             Start over
           </button>
         </div>
 
-        <div className="flex-1 space-y-3 overflow-y-auto rounded-lg border border-border bg-slate-50/80 p-4">
+        <div className="chat-scroll">
           {messages.map(renderMessage)}
 
           {step === "pick-doc-type" && (
-            <div className="max-w-[95%] rounded-xl bg-white px-4 py-3 shadow-sm">
-              <p className="mb-3 text-sm text-slate-700">Select document type</p>
+            <div className="chat-block">
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -887,7 +1009,7 @@ export function PrecedentChatbot() {
           )}
 
           {step === "pick-input" && (
-            <div className="max-w-[95%] rounded-xl bg-white px-4 py-3 shadow-sm">
+            <div className="chat-block">
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -910,14 +1032,9 @@ export function PrecedentChatbot() {
           {step === "governing-law" && (
             <form
               onSubmit={submitGoverningLaw}
-              className="max-w-[95%] space-y-3 rounded-xl bg-white px-4 py-3 shadow-sm"
+              className="chat-block space-y-3"
             >
-              <div>
-                <p className="font-medium text-slate-800">Governing law</p>
-                <p className="mt-1 text-sm text-muted">
-                  e.g. laws of England and Wales, State of New York
-                </p>
-              </div>
+              <p className="font-medium text-foreground">Governing law</p>
               <input
                 className="input"
                 value={governingLawInput}
@@ -945,16 +1062,11 @@ export function PrecedentChatbot() {
           {step === "wizard" && currentKey && (
             <form
               onSubmit={handleAnswerSubmit}
-              className="max-w-[95%] space-y-3 rounded-xl bg-white px-4 py-3 shadow-sm"
+              className="chat-block space-y-3"
             >
-              <div>
-                <p className="font-medium text-slate-800">
-                  {DEAL_PARAMETER_LABELS[currentKey]}
-                </p>
-                <p className="mt-1 text-sm text-muted">
-                  {DEAL_PARAMETER_CHAT_PROMPTS[currentKey]}
-                </p>
-              </div>
+              <p className="font-medium text-foreground">
+                {DEAL_PARAMETER_LABELS[currentKey]}
+              </p>
               <input
                 className="input"
                 value={inputValue}
@@ -994,7 +1106,7 @@ export function PrecedentChatbot() {
           )}
 
           {step === "upload" && !loading && (
-            <div className="max-w-[95%] rounded-xl bg-white px-4 py-3 shadow-sm">
+            <div className="chat-block">
               <button
                 type="button"
                 className="btn-secondary"

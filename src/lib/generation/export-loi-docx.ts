@@ -5,19 +5,18 @@ import {
   Packer,
   PageNumber,
   Paragraph,
+  Table,
+  TableCell,
+  TableRow,
   TextRun,
+  WidthType,
 } from "docx";
 import type { ExportDocumentInput } from "@/lib/generation/export-loi-shared";
-import {
-  fieldTextIncludesHeading,
-  resolveBodyBlocksForExport,
-  resolvePreambleForExport,
-  splitTextIntoLines,
-  splitTextIntoParagraphs,
-} from "@/lib/generation/export-loi-shared";
+import type { ExportContentSegment } from "@/lib/generation/export-loi-shared";
+import { buildMergedExportSegments } from "@/lib/generation/export-loi-shared";
 
 const BODY_FONT = "Times New Roman";
-const BODY_SIZE = 24;
+const BODY_SIZE = 22;
 const TITLE_SIZE = 28;
 
 function bodyParagraph(
@@ -26,7 +25,7 @@ function bodyParagraph(
 ) {
   return new Paragraph({
     alignment: AlignmentType.JUSTIFIED,
-    spacing: { after: options?.spacingAfter ?? 200, line: 276 },
+    spacing: { after: options?.spacingAfter ?? 180, line: 276 },
     children: [
       new TextRun({
         text,
@@ -40,92 +39,81 @@ function bodyParagraph(
 
 function headingParagraph(text: string) {
   return new Paragraph({
-    spacing: { before: 240, after: 120 },
+    spacing: { before: 220, after: 100 },
     children: [
       new TextRun({
         text,
         font: BODY_FONT,
         size: BODY_SIZE,
         bold: true,
-        underline: {},
       }),
     ],
   });
 }
 
-function blockToParagraphs(block: { label: string; text: string }): Paragraph[] {
-  const paragraphs: Paragraph[] = [];
+function tableBlock(rows: string[][]): Table {
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: rows.map(
+      (row, rowIndex) =>
+        new TableRow({
+          children: row.map(
+            (cell) =>
+              new TableCell({
+                shading:
+                  rowIndex === 0 ? { fill: "F2F2F2" } : undefined,
+                margins: {
+                  top: 80,
+                  bottom: 80,
+                  left: 120,
+                  right: 120,
+                },
+                children: [
+                  new Paragraph({
+                    children: [
+                      new TextRun({
+                        text: cell,
+                        font: BODY_FONT,
+                        size: BODY_SIZE,
+                        bold: rowIndex === 0,
+                      }),
+                    ],
+                  }),
+                ],
+              })
+          ),
+        })
+    ),
+  });
+}
 
-  if (fieldTextIncludesHeading(block)) {
-    const lines = splitTextIntoLines(block.text);
-    if (lines.length > 0) {
-      paragraphs.push(headingParagraph(lines[0]));
-      for (const line of lines.slice(1)) {
-        if (
-          line.length < 90 &&
-          /^[A-Z0-9][A-Za-z0-9\s\-/&().,'"]{2,}$/.test(line)
-        ) {
-          paragraphs.push(headingParagraph(line));
-        } else {
-          for (const chunk of splitTextIntoParagraphs(line)) {
-            paragraphs.push(bodyParagraph(chunk));
-          }
-        }
-      }
-    }
-    return paragraphs;
+function segmentToBlocks(
+  segment: ExportContentSegment
+): Array<Paragraph | Table> {
+  switch (segment.kind) {
+    case "heading":
+      return [headingParagraph(segment.text)];
+    case "paragraph":
+      return [bodyParagraph(segment.text)];
+    case "table":
+      return [tableBlock(segment.rows)];
+    default:
+      return [];
   }
-
-  if (!/^section\s+\d+$/i.test(block.label.trim())) {
-    paragraphs.push(headingParagraph(block.label.trim()));
-  }
-
-  for (const chunk of splitTextIntoParagraphs(block.text)) {
-    paragraphs.push(bodyParagraph(chunk));
-  }
-
-  return paragraphs;
 }
 
 export async function exportLoiAsDocx(
   input: ExportDocumentInput
 ): Promise<Buffer> {
-  const children: Paragraph[] = [];
+  const children: Array<Paragraph | Table> = [];
 
-  const preamble = resolvePreambleForExport(input);
-  if (preamble) {
-    for (const chunk of splitTextIntoParagraphs(preamble)) {
-      children.push(bodyParagraph(chunk, { spacingAfter: 160 }));
-    }
-    children.push(
-      new Paragraph({
-        spacing: { after: 120 },
-      })
-    );
-  } else if (input.content.documentTitle?.trim()) {
-    children.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 300 },
-        children: [
-          new TextRun({
-            text: input.content.documentTitle.trim(),
-            font: BODY_FONT,
-            size: TITLE_SIZE,
-            bold: true,
-          }),
-        ],
-      })
-    );
-  }
-
-  for (const block of resolveBodyBlocksForExport(input)) {
-    children.push(...blockToParagraphs(block));
+  for (const segment of buildMergedExportSegments(input)) {
+    children.push(...segmentToBlocks(segment));
   }
 
   const footerText = input.templateFilename
     ? `Template: ${input.templateFilename}`
-    : "docEngine LOI draft";
+    : "miniAviator LOI draft";
 
   const doc = new Document({
     sections: [

@@ -40,14 +40,9 @@ export default function SearchPage() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="page-shell space-y-8">
       <section>
-        <h1 className="text-3xl font-bold tracking-tight">Semantic search</h1>
-        <p className="mt-2 max-w-3xl text-muted">
-          Search across clause text using natural language — for example
-          &quot;redelivery conditions with full life limited parts&quot; or
-          &quot;early termination for insolvency&quot;.
-        </p>
+        <h1 className="page-title">Search</h1>
       </section>
 
       <form onSubmit={handleSearch} className="card space-y-4">

@@ -63,15 +63,9 @@ export default function HomePage() {
   }, [inProgress.length, loadHomeData]);
 
   return (
-    <div className="space-y-8">
+    <div className="page-shell space-y-8">
       <section>
-        <h1 className="text-3xl font-bold tracking-tight">
-          Upload documents
-        </h1>
-        <p className="mt-2 max-w-3xl text-muted">
-          Add aircraft purchase and lease deal documents to your library. We
-          extract structured metadata and link corresponding LOIs and OLAs.
-        </p>
+        <h1 className="page-title">Upload documents</h1>
       </section>
 
       <div className="grid gap-8 lg:grid-cols-[360px_1fr]">
